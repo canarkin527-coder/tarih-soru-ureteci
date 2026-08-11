@@ -98,8 +98,9 @@ Aşağıdaki ders kitabı içeriğini ve öğrenme çıktılarını kullanarak {
 Lütfen kılavuza tam uyarak yukarıda belirtilen JSON formatında yanıt ver.
 """
 
+    # Model ismi güncellendi
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-pro",
+        model_name="gemini-1.5-pro-latest",
         system_instruction=system_prompt,
         generation_config={"response_mime_type": "application/json"}
     )
@@ -117,10 +118,19 @@ Lütfen kılavuza tam uyarak yukarıda belirtilen JSON formatında yanıt ver.
 # --- Arayüz Tasarımı ---
 
 st.title("📜 11. Sınıf Tarih Ders Kitabı - Bağlam Temelli Soru Üreteci")
-st.markdown("ÖSYM ve MEB standartlarında, kaynak metne dayalı 5 seçenekli soru bankası oluşturma aracı.")
+st.markdown("ÖSYM ve MEB standartlarında, kaynak metne dayalı 5 seçenekli soru bankası oluşturma araci.")
 
 st.sidebar.header("⚙️ Ayarlar ve API")
-api_key = st.sidebar.text_input("Google Gemini API Key", type="password")
+
+# API Key kontrolü: Önce arayüzden, yoksa Streamlit Secrets üzerinden okunur
+user_api_key = st.sidebar.text_input("Google Gemini API Key", type="password")
+
+if user_api_key:
+    api_key = user_api_key
+elif "GEMINI_API_KEY" in st.secrets:
+    api_key = st.secrets["GEMINI_API_KEY"]
+else:
+    api_key = ""
 
 st.sidebar.header("📁 Dosya ve Veri Yükleme")
 guideline_file = st.sidebar.file_uploader("Soru Yazım Kılavuzu (PDF)", type=["pdf"])
@@ -137,7 +147,7 @@ learning_outcomes = st.text_area(
 
 if st.button("🚀 Bağlam Temelli Soruları Üret", type="primary"):
     if not api_key:
-        st.warning("Lütfen sol menüden Gemini API anahtarınızı giriniz.")
+        st.warning("Lütfen sol menüden Gemini API anahtarınızı giriniz veya Secrets alanına ekleyiniz.")
     elif not guideline_file:
         st.warning("Lütfen Soru Yazım Kılavuzu PDF dosyasını yükleyiniz.")
     elif not book_file:
@@ -161,7 +171,6 @@ if st.button("🚀 Bağlam Temelli Soruları Üret", type="primary"):
             
             if results:
                 st.success(f"Başarıyla {len(results)} adet bağlam seti üretildi!")
-                
                 st.session_state["generated_results"] = results
 
 # --- Üretilen Soruların Görüntülenmesi ve Dışa Aktarılması ---
