@@ -4,6 +4,9 @@ import pandas as pd
 import pypdf
 import streamlit as st
 import google.generativeai as genai
+from docx import Document
+from docx.shared import Pt, Inches, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 # --- Sayfa Yapılandırması ---
 st.set_page_config(
@@ -51,6 +54,74 @@ Soru Üretim Kuralları:
 7. Yanıt formatın KESİNLİKLE geçerli bir JSON objesi olmalıdır. Ekstra açıklama veya markdown yazısı ekleme.
 """
     return prompt
+
+def create_word_document(results: list) -> io.BytesIO:
+    """Üretilen soru setlerini şık ve düzenli bir Word (.docx) belgesine dönüştürür."""
+    doc = Document()
+    
+    # Başlık Alanı
+    title = doc.add_heading("11. Sınıf Tarih - Bağlam Temelli Soru Bankası", level=0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    subtitle = doc.add_paragraph("ÖSYM / MEB Standartlarında Hazırlanmış Bağlam Temelli Sorular")
+    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph().paragraph_format.space_after = Pt(12)
+    
+    for b_idx, baglam in enumerate(results, 1):
+        # Bağlam Başlığı ve Metrikler
+        h1 = doc.add_heading(f"BAĞLAM SETİ #{b_idx}", level=1)
+        
+        info_p = doc.add_paragraph()
+        info_p.add_run(f"Zorluk Seviyesi: ").bold = True
+        info_p.add_run(f"{baglam.get('zorluk_seviyesi', 'Belirtilmedi')} | ")
+        info_p.add_run(f"Kalite Skoru: ").bold = True
+        info_p.add_run(f"{baglam.get('kalite_skoru', 85)}/100\n")
+        info_p.add_run(f"Kalite Değerlendirmesi: ").bold = True
+        info_p.add_run(f"{baglam.get('kalite_degerlendirmesi', '')}")
+        
+        # Bağlam Metni
+        doc.add_heading("📖 Bağlam Metni", level=2)
+        p_baglam = doc.add_paragraph(baglam.get("baglam_metni", ""))
+        p_baglam.paragraph_format.left_indent = Inches(0.25)
+        p_baglam.paragraph_format.right_indent = Inches(0.25)
+        
+        # Sorular
+        doc.add_heading("❓ Sorular", level=2)
+        for q in baglam.get("sorular", []):
+            q_p = doc.add_paragraph()
+            q_p.add_run(f"Soru {q.get('soru_no')}: ").bold = True
+            q_p.add_run(q.get("soru_kok", ""))
+            
+            secenekler = q.get("secenekler", {})
+            for key in ["A", "B", "C", "D", "E"]:
+                opt_p = doc.add_paragraph()
+                opt_p.paragraph_format.left_indent = Inches(0.4)
+                opt_p.add_run(f"{key}) ").bold = True
+                opt_p.add_run(secenekler.get(key, ""))
+            
+            doc.add_paragraph() # Sorular arası boşluk
+            
+        doc.add_page_break()
+
+    # Cevap Anahtarı Sayfası
+    doc.add_heading("🔑 CEVAP ANAHTARI VE ÇÖZÜM AÇIKLAMALARI", level=1)
+    
+    for b_idx, baglam in enumerate(results, 1):
+        doc.add_heading(f"Bağlam Seti #{b_idx} Cevapları", level=2)
+        for q in baglam.get("sorular", []):
+            ans_p = doc.add_paragraph()
+            ans_p.add_run(f"Soru {q.get('soru_no')} Doğru Cevap: ").bold = True
+            ans_p.add_run(f"{q.get('dogru_cevap')}\n")
+            ans_p.add_run(f"Çözüm Açıklaması: ").bold = True
+            ans_p.add_run(f"{q.get('cozum_aciklamasi')}")
+            ans_p.paragraph_format.left_indent = Inches(0.2)
+            doc.add_paragraph()
+
+    # Bellekte dosyayı oluştur ve döndür
+    target_stream = io.BytesIO()
+    doc.save(target_stream)
+    target_stream.seek(0)
+    return target_stream
 
 def generate_questions_with_fallback(
     api_key: str,
@@ -229,7 +300,7 @@ if st.button("🚀 Bağlam Temelli Soruları Üret", type="primary"):
     else:
         with st.spinner("PDF dosyaları taranıyor ve metinler ayıklanıyor..."):
             guideline_text = extract_text_from_pdf(guideline_file)
-            book_text = extract_text_from_pdf(book_file)
+            book_text = extract_text_from_pdf(book_text_file if 'book_text_file' in locals() else book_file)
             
         with st.spinner(f"{difficulty_option} seviyesinde bağlam temelli sorular üretiliyor ve kalite skoru hesaplanıyor..."):
             system_prompt = build_system_prompt(guideline_text, difficulty_option)
@@ -286,11 +357,28 @@ if "generated_results" in st.session_state and st.session_state["generated_resul
                     st.write(f"**Çözüm Açıklaması:** {q.get('cozum_aciklamasi')}")
                 st.write("")
 
+    st.divider()
+    st.subheader("💾 Dışa Aktarma Seçenekleri")
+    
+    col_dl1, col_dl2 = st.columns(2)
+    
+    # Word İndirme Butonu
+    with col_dl1:
+        doc_file = create_word_document(results)
+        st.download_button(
+            label="📄 Soruları Word (.docx) Olarak İndir",
+            data=doc_file,
+            file_name="baglam_temelli_tarih_sorulari.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            type="primary"
+        )
+        
     # JSON İndirme Butonu
-    json_str = json.dumps(results, ensure_ascii=False, indent=2)
-    st.download_button(
-        label="📥 Soruları JSON Olarak İndir",
-        data=json_str,
-        file_name="baglam_temelli_tarih_sorulari.json",
-        mime="application/json"
-    )
+    with col_dl2:
+        json_str = json.dumps(results, ensure_ascii=False, indent=2)
+        st.download_button(
+            label="📥 Soruları JSON Olarak İndir",
+            data=json_str,
+            file_name="baglam_temelli_tarih_sorulari.json",
+            mime="application/json"
+        )
