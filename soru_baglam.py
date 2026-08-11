@@ -33,7 +33,7 @@ def extract_text_from_pdf(pdf_file) -> str:
 def build_system_prompt(guideline_text: str, difficulty: str) -> str:
     """Soru yazım kılavuzunu ve seçilen zorluk seviyesini içeren sistem yönergesini oluşturur."""
     prompt = f"""
-Sen YKS (ÖSYMS tarzı) ve MEB müfredatına uygun, 11. Sınıf Tarih dersi için bağlam temelli (paragrafa/kaynağa dayalı) yüksek kaliteli sorular hazırlayan uzman bir ölçme ve değerlendirme uzmanısın.
+Sen YKS (ÖSYM tarzı) ve MEB müfredatına uygun, 11. Sınıf Tarih dersi için bağlam temelli (paragrafa/kaynağa dayalı) yüksek kaliteli sorular hazırlayan uzman bir ölçme ve değerlendirme uzmanısın.
 
 Aşağıda verilen Soru Hazırlama Kılavuzu'ndaki ilkelere KESİNLİKLE uymalısın:
 
@@ -279,7 +279,22 @@ num_contexts = st.sidebar.number_input("Üretilecek Bağlam Seti Sayısı", min_
 
 st.sidebar.header("📁 Dosya ve Veri Yükleme")
 guideline_file = st.sidebar.file_uploader("Soru Yazım Kılavuzu (PDF)", type=["pdf"])
-book_file = st.sidebar.file_uploader("Tarih Ders Kitabı / Metni (PDF)", type=["pdf"])
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("📚 Tarih Ders Kitabı / Metni")
+
+# PDF Yükleme ve Metin Yapıştırma Sekmeleri
+tab_pdf, tab_text = st.sidebar.tabs(["📄 PDF Yükle", "✍️ Metin Yapıştır"])
+
+with tab_pdf:
+    book_file = st.file_uploader("Ders Kitabı PDF Dosyası", type=["pdf"])
+
+with tab_text:
+    book_pasted_text = st.text_area(
+        "Ders Kitabı Metnini Buraya Yapıştırın:",
+        height=200,
+        placeholder="İlgili ünite veya konu metnini buraya kopyalayıp yapıştırabilirsiniz..."
+    )
 
 st.header("🎯 Öğrenme Çıktıları (Kazanımlar)")
 learning_outcomes = st.text_area(
@@ -289,25 +304,33 @@ learning_outcomes = st.text_area(
 )
 
 if st.button("🚀 Bağlam Temelli Soruları Üret", type="primary"):
+    # Ders kitabı metninin kaynağını belirleme (PDF veya Yapıştırılan Metin)
+    final_book_text = ""
+    
+    if book_file is not None:
+        with st.spinner("PDF dosyası taranıyor ve metin ayıklanıyor..."):
+            final_book_text = extract_text_from_pdf(book_file)
+    elif book_pasted_text.strip():
+        final_book_text = book_pasted_text.strip()
+
     if not api_key:
         st.warning("Lütfen sol menüden Gemini API anahtarınızı giriniz veya Secrets alanına ekleyiniz.")
     elif not guideline_file:
         st.warning("Lütfen Soru Yazım Kılavuzu PDF dosyasını yükleyiniz.")
-    elif not book_file:
-        st.warning("Lütfen Tarih Ders Kitabı PDF dosyasını yükleyiniz.")
+    elif not final_book_text:
+        st.warning("Lütfen Ders Kitabı PDF dosyasını yükleyin veya metin alanına konu metnini yapıştırın.")
     elif not learning_outcomes.strip():
         st.warning("Lütfen en az bir öğrenme çıktısı/kazanım giriniz.")
     else:
-        with st.spinner("PDF dosyaları taranıyor ve metinler ayıklanıyor..."):
+        with st.spinner("Soru Yazım Kılavuzu taranıyor..."):
             guideline_text = extract_text_from_pdf(guideline_file)
-            book_text = extract_text_from_pdf(book_text_file if 'book_text_file' in locals() else book_file)
             
         with st.spinner(f"{difficulty_option} seviyesinde bağlam temelli sorular üretiliyor ve kalite skoru hesaplanıyor..."):
             system_prompt = build_system_prompt(guideline_text, difficulty_option)
             results = generate_questions(
                 api_key=api_key,
                 system_prompt=system_prompt,
-                book_text=book_text,
+                book_text=final_book_text,
                 outcomes=learning_outcomes,
                 num_contexts=num_contexts,
                 difficulty=difficulty_option
