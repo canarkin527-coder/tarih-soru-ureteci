@@ -48,6 +48,52 @@ Soru Üretim Kuralları:
 """
     return prompt
 
+def get_working_model(api_key: str, system_prompt: str):
+    """API anahtarının erişebildiği aktif Gemini modelini otomatik tespit eder."""
+    genai.configure(api_key=api_key)
+    
+    # Öncelikli denenecek model isimleri
+    candidate_models = [
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "models/gemini-1.5-flash",
+        "models/gemini-1.5-pro",
+        "gemini-1.0-pro"
+    ]
+    
+    # 1. Aşama: Aday modelleri sırayla dene
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=system_prompt,
+                generation_config={"response_mime_type": "application/json"}
+            )
+            return model
+        except Exception:
+            continue
+
+    # 2. Aşama: Dinamik olarak hesaptaki modelleri listele ve metin üretebilen ilk modeli seç
+    try:
+        available_models = genai.list_models()
+        for m in available_models:
+            if "generateContent" in m.supported_generation_methods:
+                model = genai.GenerativeModel(
+                    model_name=m.name,
+                    system_instruction=system_prompt,
+                    generation_config={"response_mime_type": "application/json"}
+                )
+                return model
+    except Exception as e:
+        st.error(f"Aktif model tespit edilirken hata oluştu: {e}")
+        
+    # Varsayılan son çare
+    return genai.GenerativeModel(
+        model_name="gemini-1.5-flash",
+        system_instruction=system_prompt,
+        generation_config={"response_mime_type": "application/json"}
+    )
+
 def generate_questions(
     api_key: str,
     system_prompt: str,
@@ -56,7 +102,6 @@ def generate_questions(
     num_contexts: int
 ) -> list:
     """Gemini API kullanarak bağlam temelli soruları üretir."""
-    genai.configure(api_key=api_key)
     
     # JSON Çıktı Şablonu Yönergesi
     json_structure_instruction = """
@@ -98,12 +143,8 @@ Aşağıdaki ders kitabı içeriğini ve öğrenme çıktılarını kullanarak {
 Lütfen kılavuza tam uyarak yukarıda belirtilen JSON formatında yanıt ver.
 """
 
-    # Kesin ve aktif model ismi
-    model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        system_instruction=system_prompt,
-        generation_config={"response_mime_type": "application/json"}
-    )
+    # Dinamik model tespiti ile model çağrısı yapılıyor
+    model = get_working_model(api_key, system_prompt)
 
     response = model.generate_content(user_message + "\n\n" + json_structure_instruction)
     
@@ -118,7 +159,7 @@ Lütfen kılavuza tam uyarak yukarıda belirtilen JSON formatında yanıt ver.
 # --- Arayüz Tasarımı ---
 
 st.title("📜 11. Sınıf Tarih Ders Kitabı - Bağlam Temelli Soru Üreteci")
-st.markdown("ÖSYM ve MEB standartlarında, kaynak metne dayalı 5 seçenekli soru bankası oluşturma aracı.")
+st.markdown("ÖSYM ve MEB standartlarında, kaynak metne dayalı 5 seçenekli soru bankası oluşturma araci.")
 
 st.sidebar.header("⚙️ Ayarlar ve API")
 
