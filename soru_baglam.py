@@ -31,9 +31,9 @@ def extract_text_from_pdf(pdf_file) -> str:
     return text
 
 def build_system_prompt(guideline_text: str, difficulty: str) -> str:
-    """Soru yazım kılavuzunu ve seçilen zorluk seviyesini içeren sistem yönergesini oluşturur."""
+    """Soru yazım kılavuzunu ve seçilen zorluk seviyesini içeren üst düzey akademik sistem yönergesini oluşturur."""
     prompt = f"""
-Sen YKS (ÖSYM tarzı) ve MEB müfredatına uygun, 11. Sınıf Tarih dersi için bağlam temelli (paragrafa/kaynağa dayalı) yüksek kaliteli sorular hazırlayan uzman bir ölçme ve değerlendirme uzmanısın.
+Sen YKS (TYT/AYT derecelendirme seviyesinde) ve MEB müfredatına tam uyumlu, 11. Sınıf Tarih dersi için **üst düzey akademik nitelikte, derinlikli ve bağlam temelli** sorular hazırlayan kıdemli bir ÖSYM Ölçme ve Değerlendirme Uzmanısın.
 
 Aşağıda verilen Soru Hazırlama Kılavuzu'ndaki ilkelere KESİNLİKLE uymalısın:
 
@@ -41,17 +41,21 @@ Aşağıda verilen Soru Hazırlama Kılavuzu'ndaki ilkelere KESİNLİKLE uymalı
 {guideline_text}
 ================================
 
-Soru Üretim Kuralları:
-1. Her soru seti 1 adet kapsayıcı ve özgün Bağlam Metni (köken metin, harita/tarihçi yorumu veya tarihsel belge niteliğinde) içermelidir.
-2. Bu bağlam metnine bağlı tam 3 veya 4 adet çoktan seçmeli soru oluşturulmalıdır.
-3. Her soru kesinlikle 5 seçenekli olmalıdır (A, B, C, D, E).
-4. Soruların hedef zorluk seviyesi KESİNLİKLE '{difficulty.upper()}' seviyesinde olmalıdır.
-   - Kolay: Doğrudan bağlamdan çıkarılabilen, temel kavrayış ve ilişkilendirme ölçen sorular.
-   - Orta: Analiz, neden-sonuç kurma, kronolojik kavrayış ve çıkarım yapmayı gerektiren sorular.
-   - Zor: Üst düzey sentez, kavramsal derinlik, çeldiricileri güçlü ve çok yönlü tarihsel yorumlama gerektiren sorular.
-5. Verilen öğrenme çıktıları (kazanımlar) ve ders kitabı metni dışına çıkılmamalıdır.
-6. Ürettiğin her bağlam seti için soruların akademik niteliğini, çeldirici gücünü ve kılavuza uyumunu değerlendiren 0-100 arası bir 'kalite_skoru' ve bunun gerekçesini belirten bir 'kalite_degerlendirmesi' eklemelisin.
-7. Yanıt formatın KESİNLİKLE geçerli bir JSON objesi olmalıdır. Ekstra açıklama veya markdown yazısı ekleme.
+### ZORLUK VE BİLİŞSEL DERİNLİK KRİTERLERİ (KRİTİK):
+Soruların hedef zorluk seviyesi KESİNLİKLE '{difficulty.upper()}' seviyesinde olmalıdır.
+
+1. **Sığ Sorulardan Kaçın:** Metinde açıkça yazan bir bilgiyi doğrudan soran (örn: "X antlaşması kaç yılında imzalandı?" veya "Metne göre X kimdir?") sığ, ezber veya doğrudan eşleştirme soruları ÜRETME.
+2. **Üst Düzey Akıl Yürütme:** Sorular Bloom Taksonomisi'nin Analiz, Değerlendirme ve Sentez basamaklarında olmalıdır. Öğrenci metindeki tarihsel olgunun:
+   - Derin neden-sonuç ilişkilerini,
+   - Dönemin konjonktürel/jeopolitik dengelerini,
+   - Tarihsel devamlılık ve değişim dinamiklerini,
+   - Metnin arkasındaki zihniyet ve yapısal kırılmaları kavrayarak çözebilmelidir.
+3. **Güçlü ve Tuzaklı Çeldiriciler (A, B, C, D, E):**
+   - Çeldiriciler kesinlikle göze çarpan "saçma" veya "kolay elenen" şıklar olmamalıdır.
+   - Çeldiricilerin her biri, konu hakkında yüzeysel bilgisi olan bir öğrencinin düşebileceği, tarihsel olarak mantıklı görünen ancak bağlamdaki ince mantık örgüsünü/zamansal uyumu/nedensel öncülü ıskalayan **güçlü yanıltıcılardan** oluşmalıdır.
+4. **Bağlam Metni Kalitesi:** Bağlam metni zengin, tarihsel bir belge, tarihçi yorumu, diplomatik yazışma veya dönemsel analiz niteliğinde olmalı; yüzeysel ve kısa geçilmemelidir.
+5. **Aşırı Titiz Kalite Puanlaması:** Ürettiğin soruları acımasızca eleştir. Gerçekten YKS derecelendirme sorusu niteliğindeyse yüksek puan (90-100) ver, basit kaldıysa puanı düşür ve gerekçesini belirt.
+6. Yanıt formatın KESİNLİKLE geçerli bir JSON objesi olmalıdır.
 """
     return prompt
 
@@ -129,28 +133,35 @@ def generate_questions_with_fallback(
     user_message: str
 ):
     """
-    Erişilebilir kararlı modelleri sırayla dener. 404 veya yetki hatası
-    veren modelleri atlayarak çalışan ilk modelden yanıt alır.
+    Erişilebilir kararlı gelişmiş akıl yürütme modellerini sırayla dener.
+    Derinlemesine analiz ve çeldirici üretimi için pro/flash modellerini yapılandırır.
     """
     genai.configure(api_key=api_key)
 
-    # Öncelikli ve standart çalışması garanti edilen model listesi
+    # Derinlikli soru üretimi için öncelikli gelişmiş modeller
     candidate_models = [
-        "gemini-1.5-flash",
         "gemini-1.5-pro",
         "gemini-2.0-flash",
-        "models/gemini-1.5-flash",
-        "models/gemini-1.5-pro"
+        "gemini-1.5-flash",
+        "models/gemini-1.5-pro",
+        "models/gemini-1.5-flash"
     ]
 
     last_exception = None
+
+    # Akıl yürütmeyi zenginleştiren jenerasyon parametreleri
+    generation_config = {
+        "response_mime_type": "application/json",
+        "temperature": 0.35, # Mantıksal tutarlılığı korurken çeldirici çeşitliliğini artıran ideal sıcaklık
+        "top_p": 0.95
+    }
 
     for model_name in candidate_models:
         try:
             model = genai.GenerativeModel(
                 model_name=model_name,
                 system_instruction=system_prompt,
-                generation_config={"response_mime_type": "application/json"}
+                generation_config=generation_config
             )
             response = model.generate_content(user_message)
             return response.text
@@ -169,7 +180,7 @@ def generate_questions_with_fallback(
                     model = genai.GenerativeModel(
                         model_name=m.name,
                         system_instruction=system_prompt,
-                        generation_config={"response_mime_type": "application/json"}
+                        generation_config=generation_config
                     )
                     response = model.generate_content(user_message)
                     return response.text
@@ -189,7 +200,7 @@ def generate_questions(
     num_contexts: int,
     difficulty: str
 ) -> list:
-    """Gemini API kullanarak bağlam temelli soruları üretir."""
+    """Gemini API kullanarak üst düzey bağlam temelli soruları üretir."""
     
     # JSON Çıktı Şablonu Yönergesi
     json_structure_instruction = """
@@ -198,23 +209,23 @@ def generate_questions(
   "baglam_setleri": [
     {
       "baglam_id": 1,
-      "zorluk_seviyesi": "Orta",
-      "kalite_skoru": 92,
-      "kalite_degerlendirmesi": "Bağlam metni zengin, çeldiriciler güçlü ve kazanımla tam uyumlu.",
-      "baglam_metni": "Bağlam metni buraya gelecek...",
+      "zorluk_seviyesi": "Zor",
+      "kalite_skoru": 95,
+      "kalite_degerlendirmesi": "Bağlam metni tarihsel analiz derinliğine sahip. Çeldiriciler kavramsal kafa karışıklığı yaratacak kadar güçlü ve üst düzey çıkarım gerektiriyor.",
+      "baglam_metni": "Zengin, analiz içeren köken bağlam metni buraya gelecek...",
       "sorular": [
         {
           "soru_no": 1,
-          "soru_kok": "Soru kökü buraya...",
+          "soru_kok": "Üst düzey analitik düşünme, sentez veya çıkarım gerektiren soru kökü...",
           "secenekler": {
-            "A": "Seçenek A",
-            "B": "Seçenek B",
-            "C": "Seçenek C",
-            "D": "Seçenek D",
-            "E": "Seçenek E"
+            "A": "Çok güçlü ve mantıklı çeldirici veya doğru cevap",
+            "B": "Çok güçlü ve mantıklı çeldirici veya doğru cevap",
+            "C": "Çok güçlü ve mantıklı çeldirici veya doğru cevap",
+            "D": "Çok güçlü ve mantıklı çeldirici veya doğru cevap",
+            "E": "Çok güçlü ve mantıklı çeldirici veya doğru cevap"
           },
           "dogru_cevap": "A",
-          "cozum_aciklamasi": "Çözüm açıklaması..."
+          "cozum_aciklamasi": "Detaylı, dönemsel nedensellik ilişkisini açıklayan akademik çözüm gerekçesi..."
         }
       ]
     }
@@ -223,7 +234,7 @@ def generate_questions(
 """
 
     user_message = f"""
-Aşağıdaki ders kitabı içeriğini ve öğrenme çıktılarını kullanarak {num_contexts} adet bağlam seti (her bağlamda 3-4 soru olacak şekilde) oluştur.
+Aşağıdaki ders kitabı içeriğini ve öğrenme çıktılarını kullanarak {num_contexts} adet **ÜST DÜZEY AKADEMİK BİLİŞSEL SEVİYEDE** bağlam seti (her bağlamda 3-4 soru olacak şekilde) oluştur.
 
 === HEDEF ZORLUK SEVİYESİ ===
 {difficulty}
@@ -232,9 +243,9 @@ Aşağıdaki ders kitabı içeriğini ve öğrenme çıktılarını kullanarak {
 {outcomes}
 
 === DERS KİTABI METIN BÖLÜMÜ ===
-{book_text[:15000]}  # Token sınırını korumak için metin kesiti
+{book_text[:18000]}  # Yüksek bağlam derinliği için genişletilmiş metin kesiti
 
-Lütfen kılavuza tam uyarak yukarıda belirtilen JSON formatında yanıt ver.
+Lütfen belirlenen üst düzey zorluk ve güçlü çeldirici standartlarına KESİNLİKLE uyarak yukarıdaki JSON formatında yanıt ver.
 
 {json_structure_instruction}
 """
@@ -271,7 +282,7 @@ st.sidebar.header("📊 Soru Parametreleri")
 difficulty_option = st.sidebar.selectbox(
     "🎯 Zorluk Seviyesi",
     options=["Kolay", "Orta", "Zor"],
-    index=1,
+    index=2, # Standart varsayılan olarak "Zor" seçeneği getirildi
     help="Soruların bilişsel seviyesini ve çeldirici gücünü belirler."
 )
 
@@ -325,7 +336,7 @@ if st.button("🚀 Bağlam Temelli Soruları Üret", type="primary"):
         with st.spinner("Soru Yazım Kılavuzu taranıyor..."):
             guideline_text = extract_text_from_pdf(guideline_file)
             
-        with st.spinner(f"{difficulty_option} seviyesinde bağlam temelli sorular üretiliyor ve kalite skoru hesaplanıyor..."):
+        with st.spinner(f"{difficulty_option} seviyesinde derinlikli bağlam temelli sorular üretiliyor ve kalite skoru hesaplanıyor..."):
             system_prompt = build_system_prompt(guideline_text, difficulty_option)
             results = generate_questions(
                 api_key=api_key,
@@ -337,7 +348,7 @@ if st.button("🚀 Bağlam Temelli Soruları Üret", type="primary"):
             )
             
             if results:
-                st.success(f"Başarıyla {len(results)} adet bağlam seti üretildi!")
+                st.success(f"Başarıyla {len(results)} adet yüksek kaliteli bağlam seti üretildi!")
                 st.session_state["generated_results"] = results
 
 # --- Üretilen Soruların Görüntülenmesi ve Dışa Aktarılması ---
@@ -405,3 +416,4 @@ if "generated_results" in st.session_state and st.session_state["generated_resul
             file_name="baglam_temelli_tarih_sorulari.json",
             mime="application/json"
         )
+
