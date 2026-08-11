@@ -27,8 +27,8 @@ def extract_text_from_pdf(pdf_file) -> str:
         st.error(f"PDF okunurken bir hata oluştu: {e}")
     return text
 
-def build_system_prompt(guideline_text: str) -> str:
-    """Soru yazım kılavuzunu içeren sistem yönergesini oluşturur."""
+def build_system_prompt(guideline_text: str, difficulty: str) -> str:
+    """Soru yazım kılavuzunu ve seçilen zorluk seviyesini içeren sistem yönergesini oluşturur."""
     prompt = f"""
 Sen YKS (ÖSYMS tarzı) ve MEB müfredatına uygun, 11. Sınıf Tarih dersi için bağlam temelli (paragrafa/kaynağa dayalı) yüksek kaliteli sorular hazırlayan uzman bir ölçme ve değerlendirme uzmanısın.
 
@@ -42,9 +42,13 @@ Soru Üretim Kuralları:
 1. Her soru seti 1 adet kapsayıcı ve özgün Bağlam Metni (köken metin, harita/tarihçi yorumu veya tarihsel belge niteliğinde) içermelidir.
 2. Bu bağlam metnine bağlı tam 3 veya 4 adet çoktan seçmeli soru oluşturulmalıdır.
 3. Her soru kesinlikle 5 seçenekli olmalıdır (A, B, C, D, E).
-4. Sorular doğrudan bilgi ezberini değil; analiz, sentez, kronolojik kavrayış, neden-sonuç ilişkisi ve tarihsel empati gibi üst düzey bilişsel becerileri ölçmelidir.
+4. Soruların hedef zorluk seviyesi KESİNLİKLE '{difficulty.upper()}' seviyesinde olmalıdır.
+   - Kolay: Doğrudan bağlamdan çıkarılabilen, temel kavrayış ve ilişkilendirme ölçen sorular.
+   - Orta: Analiz, neden-sonuç kurma, kronolojik kavrayış ve çıkarım yapmayı gerektiren sorular.
+   - Zor: Üst düzey sentez, kavramsal derinlik, çeldiricileri güçlü ve çok yönlü tarihsel yorumlama gerektiren sorular.
 5. Verilen öğrenme çıktıları (kazanımlar) ve ders kitabı metni dışına çıkılmamalıdır.
-6. Yanıt formatın KESİNLİKLE geçerli bir JSON objesi olmalıdır. Ekstra açıklama veya markdown yazısı ekleme.
+6. Ürettiğin her bağlam seti için soruların akademik niteliğini, çeldirici gücünü ve kılavuza uyumunu değerlendiren 0-100 arası bir 'kalite_skoru' ve bunun gerekçesini belirten bir 'kalite_degerlendirmesi' eklemelisin.
+7. Yanıt formatın KESİNLİKLE geçerli bir JSON objesi olmalıdır. Ekstra açıklama veya markdown yazısı ekleme.
 """
     return prompt
 
@@ -88,7 +92,6 @@ def generate_questions_with_fallback(
         available_models = genai.list_models()
         for m in available_models:
             if "generateContent" in m.supported_generation_methods:
-                # Sorun çıkaran sürümleri atla
                 if "2.5" in m.name:
                     continue
                 try:
@@ -112,7 +115,8 @@ def generate_questions(
     system_prompt: str,
     book_text: str,
     outcomes: str,
-    num_contexts: int
+    num_contexts: int,
+    difficulty: str
 ) -> list:
     """Gemini API kullanarak bağlam temelli soruları üretir."""
     
@@ -123,6 +127,9 @@ def generate_questions(
   "baglam_setleri": [
     {
       "baglam_id": 1,
+      "zorluk_seviyesi": "Orta",
+      "kalite_skoru": 92,
+      "kalite_degerlendirmesi": "Bağlam metni zengin, çeldiriciler güçlü ve kazanımla tam uyumlu.",
       "baglam_metni": "Bağlam metni buraya gelecek...",
       "sorular": [
         {
@@ -146,6 +153,9 @@ def generate_questions(
 
     user_message = f"""
 Aşağıdaki ders kitabı içeriğini ve öğrenme çıktılarını kullanarak {num_contexts} adet bağlam seti (her bağlamda 3-4 soru olacak şekilde) oluştur.
+
+=== HEDEF ZORLUK SEVİYESİ ===
+{difficulty}
 
 === ÖĞRENME ÇIKTILARI / KAZANIMLAR ===
 {outcomes}
@@ -184,11 +194,21 @@ elif "GEMINI_API_KEY" in st.secrets:
 else:
     api_key = ""
 
+st.sidebar.header("📊 Soru Parametreleri")
+
+# Zorluk Seviyesi Seçimi
+difficulty_option = st.sidebar.selectbox(
+    "🎯 Zorluk Seviyesi",
+    options=["Kolay", "Orta", "Zor"],
+    index=1,
+    help="Soruların bilişsel seviyesini ve çeldirici gücünü belirler."
+)
+
+num_contexts = st.sidebar.number_input("Üretilecek Bağlam Seti Sayısı", min_value=1, max_value=5, value=1)
+
 st.sidebar.header("📁 Dosya ve Veri Yükleme")
 guideline_file = st.sidebar.file_uploader("Soru Yazım Kılavuzu (PDF)", type=["pdf"])
 book_file = st.sidebar.file_uploader("Tarih Ders Kitabı / Metni (PDF)", type=["pdf"])
-
-num_contexts = st.sidebar.number_input("Üretilecek Bağlam Seti Sayısı", min_value=1, max_value=5, value=1)
 
 st.header("🎯 Öğrenme Çıktıları (Kazanımlar)")
 learning_outcomes = st.text_area(
@@ -211,14 +231,15 @@ if st.button("🚀 Bağlam Temelli Soruları Üret", type="primary"):
             guideline_text = extract_text_from_pdf(guideline_file)
             book_text = extract_text_from_pdf(book_file)
             
-        with st.spinner("Soru yazım kılavuzu ışığında bağlam temelli sorular üretiliyor..."):
-            system_prompt = build_system_prompt(guideline_text)
+        with st.spinner(f"{difficulty_option} seviyesinde bağlam temelli sorular üretiliyor ve kalite skoru hesaplanıyor..."):
+            system_prompt = build_system_prompt(guideline_text, difficulty_option)
             results = generate_questions(
                 api_key=api_key,
                 system_prompt=system_prompt,
                 book_text=book_text,
                 outcomes=learning_outcomes,
-                num_contexts=num_contexts
+                num_contexts=num_contexts,
+                difficulty=difficulty_option
             )
             
             if results:
@@ -234,7 +255,20 @@ if "generated_results" in st.session_state and st.session_state["generated_resul
     st.header("📑 Üretilen Soru Setleri")
     
     for b_idx, baglam in enumerate(results, 1):
-        with st.expander(f"📌 Bağlam Seti #{b_idx}", expanded=True):
+        with st.expander(f"📌 Bağlam Seti #{b_idx} | Zorluk: {baglam.get('zorluk_seviyesi', difficulty_option)}", expanded=True):
+            
+            # Kalite Skoru ve Metrikler
+            score = baglam.get("kalite_skoru", 85)
+            evaluation = baglam.get("kalite_degerlendirmesi", "Soru kalitesi standartlara uygun.")
+            
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                st.metric(label="⭐ Kalite Skoru", value=f"{score}/100")
+            with col2:
+                st.caption("🔍 **Kalite Değerlendirmesi:**")
+                st.write(evaluation)
+                
+            st.markdown("---")
             st.subheader("📖 Bağlam Metni")
             st.info(baglam.get("baglam_metni", ""))
             
