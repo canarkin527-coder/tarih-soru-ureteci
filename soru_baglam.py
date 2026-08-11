@@ -98,7 +98,7 @@ Aşağıdaki ders kitabı içeriğini ve öğrenme çıktılarını kullanarak {
 Lütfen kılavuza tam uyarak yukarıda belirtilen JSON formatında yanıt ver.
 """
 
-    # Kesin ve standart model ismi kullanıldı (NotFound hatasını engeller)
+    # Kesin ve aktif model ismi
     model = genai.GenerativeModel(
         model_name="gemini-1.5-flash",
         system_instruction=system_prompt,
@@ -122,7 +122,7 @@ st.markdown("ÖSYM ve MEB standartlarında, kaynak metne dayalı 5 seçenekli so
 
 st.sidebar.header("⚙️ Ayarlar ve API")
 
-# API Key kontrolü: Önce arayüzden, yoksa Streamlit Secrets üzerinden okunur
+# API Key kontrolü
 user_api_key = st.sidebar.text_input("Google Gemini API Key", type="password")
 
 if user_api_key:
