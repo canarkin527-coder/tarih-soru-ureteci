@@ -98,9 +98,9 @@ Aşağıdaki ders kitabı içeriğini ve öğrenme çıktılarını kullanarak {
 Lütfen kılavuza tam uyarak yukarıda belirtilen JSON formatında yanıt ver.
 """
 
-    # Model ismi güncellendi
+    # Kesin ve standart model ismi kullanıldı (NotFound hatasını engeller)
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-pro-latest",
+        model_name="gemini-1.5-flash",
         system_instruction=system_prompt,
         generation_config={"response_mime_type": "application/json"}
     )
@@ -118,7 +118,7 @@ Lütfen kılavuza tam uyarak yukarıda belirtilen JSON formatında yanıt ver.
 # --- Arayüz Tasarımı ---
 
 st.title("📜 11. Sınıf Tarih Ders Kitabı - Bağlam Temelli Soru Üreteci")
-st.markdown("ÖSYM ve MEB standartlarında, kaynak metne dayalı 5 seçenekli soru bankası oluşturma araci.")
+st.markdown("ÖSYM ve MEB standartlarında, kaynak metne dayalı 5 seçenekli soru bankası oluşturma aracı.")
 
 st.sidebar.header("⚙️ Ayarlar ve API")
 
