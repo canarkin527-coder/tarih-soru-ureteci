@@ -55,7 +55,7 @@ Soruların hedef zorluk seviyesi KESİNLİKLE '{difficulty.upper()}' seviyesinde
    - Çeldiricilerin her biri, konu hakkında yüzeysel bilgisi olan bir öğrencinin düşebileceği, tarihsel olarak mantıklı görünen ancak bağlamdaki ince mantık örgüsünü/zamansal uyumu/nedensel öncülü ıskalayan **güçlü yanıltıcılardan** oluşmalıdır.
 4. **Bağlam Metni Kalitesi:** Bağlam metni zengin, tarihsel bir belge, tarihçi yorumu, diplomatik yazışma veya dönemsel analiz niteliğinde olmalı; yüzeysel ve kısa geçilmemelidir.
 5. **Aşırı Titiz Kalite Puanlaması:** Ürettiğin soruları acımasızca eleştir. Gerçekten YKS derecelendirme sorusu niteliğindeyse yüksek puan (90-100) ver, basit kaldıysa puanı düşür ve gerekçesini belirt.
-6. Yanıt formatın KESİNLİKLE geçerli bir JSON objesi olmalıdır.
+6. Yanıt formatın KESİNLİKLE kök anahtarı "baglam_setleri" olan geçerli bir JSON objesi olmalıdır.
 """
     return prompt
 
@@ -204,7 +204,7 @@ def generate_questions(
     
     # JSON Çıktı Şablonu Yönergesi
     json_structure_instruction = """
-Üreteceğin JSON yapısı şu formatta olmalıdır:
+Üreteceğin JSON yapısı KESİNLİKLE bir obje olmalı ve tek bir anahtar anahtar "baglam_setleri" içermelidir:
 {
   "baglam_setleri": [
     {
@@ -253,7 +253,15 @@ Lütfen belirlenen üst düzey zorluk ve güçlü çeldirici standartlarına KES
     try:
         response_text = generate_questions_with_fallback(api_key, system_prompt, user_message)
         data = json.loads(response_text)
-        return data.get("baglam_setleri", [])
+        
+        # Yanıt veri tipi kontrolü (Dict vs List)
+        if isinstance(data, dict):
+            return data.get("baglam_setleri", [])
+        elif isinstance(data, list):
+            return data
+        else:
+            st.error("Model beklenmeyen bir JSON veri yapısı döndürdü.")
+            return []
         
     except Exception as e:
         st.error(f"Soru üretimi sırasında bir hata oluştu: {e}")
@@ -416,4 +424,3 @@ if "generated_results" in st.session_state and st.session_state["generated_resul
             file_name="baglam_temelli_tarih_sorulari.json",
             mime="application/json"
         )
-
