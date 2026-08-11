@@ -48,46 +48,64 @@ Soru Üretim Kuralları:
 """
     return prompt
 
-def get_active_model_instance(api_key: str, system_prompt: str):
+def generate_questions_with_fallback(
+    api_key: str,
+    system_prompt: str,
+    user_message: str
+):
     """
-    API anahtarına bağlı aktif modelleri sorgular ve v1beta endpoint'i ile uyumlu
-    tam model adını (models/...) kullanarak GenerativeModel nesnesi döner.
+    Erişilebilir kararlı modelleri sırayla dener. 404 veya yetki hatası
+    veren modelleri atlayarak çalışan ilk modelden yanıt alır.
     """
     genai.configure(api_key=api_key)
-    
-    selected_model_name = None
-    
+
+    # Öncelikli ve standart çalışması garanti edilen model listesi
+    candidate_models = [
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-2.0-flash",
+        "models/gemini-1.5-flash",
+        "models/gemini-1.5-pro"
+    ]
+
+    last_exception = None
+
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=system_prompt,
+                generation_config={"response_mime_type": "application/json"}
+            )
+            response = model.generate_content(user_message)
+            return response.text
+        except Exception as err:
+            last_exception = err
+            continue
+
+    # Eğer aday modellerden biri çalışmazsa API'den dinamik liste alıp dene
     try:
-        # Hesabınızda metin üretimi destekleyen aktif modelleri listele
-        available_models = list(genai.list_models())
+        available_models = genai.list_models()
         for m in available_models:
             if "generateContent" in m.supported_generation_methods:
-                # Öncelikli olarak flash veya pro modellerini seç
-                if "flash" in m.name or "pro" in m.name:
-                    selected_model_name = m.name
-                    break
-        
-        # Eğer flash/pro bulunamazsa metin üreten ilk modeli al
-        if not selected_model_name and available_models:
-            for m in available_models:
-                if "generateContent" in m.supported_generation_methods:
-                    selected_model_name = m.name
-                    break
-                    
+                # Sorun çıkaran sürümleri atla
+                if "2.5" in m.name:
+                    continue
+                try:
+                    model = genai.GenerativeModel(
+                        model_name=m.name,
+                        system_instruction=system_prompt,
+                        generation_config={"response_mime_type": "application/json"}
+                    )
+                    response = model.generate_content(user_message)
+                    return response.text
+                except Exception as inner_err:
+                    last_exception = inner_err
+                    continue
     except Exception as list_err:
-        st.warning(f"Model listesi alınırken uyarı: {list_err}")
+        pass
 
-    # Otomatik tespit yapılamazsa tam isim ön eki ile varsayılan atama yap
-    if not selected_model_name:
-        selected_model_name = "models/gemini-1.5-flash"
-
-    # st.info(f"Kullanılan Model Endpoint: {selected_model_name}")
-
-    return genai.GenerativeModel(
-        model_name=selected_model_name,
-        system_instruction=system_prompt,
-        generation_config={"response_mime_type": "application/json"}
-    )
+    raise last_exception if last_exception else RuntimeError("Erişilebilir bir Gemini modeli bulunamadı.")
 
 def generate_questions(
     api_key: str,
@@ -136,14 +154,13 @@ Aşağıdaki ders kitabı içeriğini ve öğrenme çıktılarını kullanarak {
 {book_text[:15000]}  # Token sınırını korumak için metin kesiti
 
 Lütfen kılavuza tam uyarak yukarıda belirtilen JSON formatında yanıt ver.
+
+{json_structure_instruction}
 """
 
     try:
-        # Sunucudan doğrulanan aktif model çağrılıyor
-        model = get_active_model_instance(api_key, system_prompt)
-        response = model.generate_content(user_message + "\n\n" + json_structure_instruction)
-        
-        data = json.loads(response.text)
+        response_text = generate_questions_with_fallback(api_key, system_prompt, user_message)
+        data = json.loads(response_text)
         return data.get("baglam_setleri", [])
         
     except Exception as e:
