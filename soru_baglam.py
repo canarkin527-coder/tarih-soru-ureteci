@@ -48,48 +48,43 @@ Soru Üretim Kuralları:
 """
     return prompt
 
-def get_working_model(api_key: str, system_prompt: str):
-    """API anahtarının erişebildiği aktif Gemini modelini otomatik tespit eder."""
+def get_active_model_instance(api_key: str, system_prompt: str):
+    """
+    API anahtarına bağlı aktif modelleri sorgular ve v1beta endpoint'i ile uyumlu
+    tam model adını (models/...) kullanarak GenerativeModel nesnesi döner.
+    """
     genai.configure(api_key=api_key)
     
-    # Öncelikli denenecek model isimleri
-    candidate_models = [
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "models/gemini-1.5-flash",
-        "models/gemini-1.5-pro",
-        "gemini-1.0-pro"
-    ]
+    selected_model_name = None
     
-    # 1. Aşama: Aday modelleri sırayla dene
-    for model_name in candidate_models:
-        try:
-            model = genai.GenerativeModel(
-                model_name=model_name,
-                system_instruction=system_prompt,
-                generation_config={"response_mime_type": "application/json"}
-            )
-            return model
-        except Exception:
-            continue
-
-    # 2. Aşama: Dinamik olarak hesaptaki modelleri listele ve metin üretebilen ilk modeli seç
     try:
-        available_models = genai.list_models()
+        # Hesabınızda metin üretimi destekleyen aktif modelleri listele
+        available_models = list(genai.list_models())
         for m in available_models:
             if "generateContent" in m.supported_generation_methods:
-                model = genai.GenerativeModel(
-                    model_name=m.name,
-                    system_instruction=system_prompt,
-                    generation_config={"response_mime_type": "application/json"}
-                )
-                return model
-    except Exception as e:
-        st.error(f"Aktif model tespit edilirken hata oluştu: {e}")
+                # Öncelikli olarak flash veya pro modellerini seç
+                if "flash" in m.name or "pro" in m.name:
+                    selected_model_name = m.name
+                    break
         
-    # Varsayılan son çare
+        # Eğer flash/pro bulunamazsa metin üreten ilk modeli al
+        if not selected_model_name and available_models:
+            for m in available_models:
+                if "generateContent" in m.supported_generation_methods:
+                    selected_model_name = m.name
+                    break
+                    
+    except Exception as list_err:
+        st.warning(f"Model listesi alınırken uyarı: {list_err}")
+
+    # Otomatik tespit yapılamazsa tam isim ön eki ile varsayılan atama yap
+    if not selected_model_name:
+        selected_model_name = "models/gemini-1.5-flash"
+
+    # st.info(f"Kullanılan Model Endpoint: {selected_model_name}")
+
     return genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
+        model_name=selected_model_name,
         system_instruction=system_prompt,
         generation_config={"response_mime_type": "application/json"}
     )
@@ -143,23 +138,22 @@ Aşağıdaki ders kitabı içeriğini ve öğrenme çıktılarını kullanarak {
 Lütfen kılavuza tam uyarak yukarıda belirtilen JSON formatında yanıt ver.
 """
 
-    # Dinamik model tespiti ile model çağrısı yapılıyor
-    model = get_working_model(api_key, system_prompt)
-
-    response = model.generate_content(user_message + "\n\n" + json_structure_instruction)
-    
     try:
+        # Sunucudan doğrulanan aktif model çağrılıyor
+        model = get_active_model_instance(api_key, system_prompt)
+        response = model.generate_content(user_message + "\n\n" + json_structure_instruction)
+        
         data = json.loads(response.text)
         return data.get("baglam_setleri", [])
+        
     except Exception as e:
-        st.error(f"JSON yanıtı ayrıştırılamadı: {e}")
-        st.text(response.text)
+        st.error(f"Soru üretimi sırasında bir hata oluştu: {e}")
         return []
 
 # --- Arayüz Tasarımı ---
 
 st.title("📜 11. Sınıf Tarih Ders Kitabı - Bağlam Temelli Soru Üreteci")
-st.markdown("ÖSYM ve MEB standartlarında, kaynak metne dayalı 5 seçenekli soru bankası oluşturma araci.")
+st.markdown("ÖSYM ve MEB standartlarında, kaynak metne dayalı 5 seçenekli soru bankası oluşturma aracı.")
 
 st.sidebar.header("⚙️ Ayarlar ve API")
 
