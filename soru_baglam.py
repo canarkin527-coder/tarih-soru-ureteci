@@ -11,6 +11,12 @@ except ImportError:
     ANTHROPIC_MEVCUT = False
 
 try:
+    import google.generativeai as genai
+    GEMINI_MEVCUT = True
+except ImportError:
+    GEMINI_MEVCUT = False
+
+try:
     from pypdf import PdfReader
     PYPDF_MEVCUT = True
 except ImportError:
@@ -197,6 +203,17 @@ def soru_uret_api(api_key, model, prompt):
     return "\n".join(parcalar)
 
 
+def soru_uret_gemini(api_key, model, prompt):
+    """Google Gemini API'sini çağırarak promptu doğrudan bir soruya dönüştürür."""
+    genai.configure(api_key=api_key)
+    model_obj = genai.GenerativeModel(model)
+    response = model_obj.generate_content(
+        prompt,
+        generation_config=genai.types.GenerationConfig(max_output_tokens=8000)
+    )
+    return response.text
+
+
 def build_prompt(unite_adi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
                   odak_kavramlar, ek_baglam, soru_sayisi, kaynak_metin=""):
     """Seçilen parametrelere göre LLM'e gönderilecek promptu oluşturur."""
@@ -206,10 +223,21 @@ def build_prompt(unite_adi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
     # Kullanıcı belirli kavramlar seçtiyse onları, seçmediyse tüm kavramları kullan
     kavramlar = ", ".join(odak_kavramlar) if odak_kavramlar else ", ".join(tum_kavramlar)
 
+    uslup_blok = """
+0. **Yazım Üslubu (ZORUNLU):**
+   - Metinler bir yapay zekâ tarafından değil, alanında deneyimli bir tarih öğretmeni/soru yazarı tarafından kaleme alınmış gibi doğal, akıcı ve özgün bir Türkçeyle yazılmalıdır.
+   - Yapay zekâ metinlerine özgü basmakalıp açılışlardan ("Günümüzde...", "Tarih boyunca...", "Bilindiği gibi...", "Şüphesiz ki..." gibi klişe girişlerden), aşırı sıfat yığmaktan ve yapay/şablon cümle kalıplarından kaçınılmalıdır.
+   - Her bağlam metni kendine özgü, önceki metinlerin kalıbını tekrar etmeyen bir anlatım ve kurguyla yazılmalıdır; seri üretim hissi vermemelidir.
+"""
+
     coktan_secmeli_blok = """
 3. **Seçenekler ve Çözüm (Çoktan Seçmeli ise):**
-   - A, B, C, D, E olmak üzere 5 seçenek içermelidir. Çeldiriciler güçlü ve mantıklı olmalıdır.
-   - Doğru cevap açıkça belirtilmeli ve detaylı pedagojik "Çözüm Açıklaması" eklenmelidir.
+   - A, B, C, D, E olmak üzere 5 seçenek içermelidir.
+   - **Seçenek Uzunluğu (ZORUNLU):** Tüm seçenekler kelime sayısı, satır uzunluğu, dil yapısı ve karmaşıklık bakımından birbirine YAKIN ve DENGELİ olmalıdır. Doğru seçenek diğerlerinden daha uzun, daha detaylı veya daha açıklayıcı yazılarak öğrenciye görsel bir ipucu verilmemelidir.
+   - "Hepsi", "Hiçbiri", "A ve B" gibi öğrencinin muhakeme yapmadan eleyebileceği/seçebileceği kapsayıcı seçenekler KESİNLİKLE kullanılmamalıdır. Her seçenek bağımsız bir yargı veya bilgi içermelidir.
+   - Seçeneklerde bağlam metnindeki bir cümle veya kelime öbeği birebir/aynen tekrar edilmemeli; metindeki fikir farklı kelimelerle (anlamca özdeş ama biçimce farklı) ifade edilmelidir. Aksi hâlde öğrenci anlamadan görsel eşleştirmeyle doğru cevabı bulabilir.
+   - Çeldiriciler rastgele veya "sadece seçenek sayısını tamamlamak için yazılmış bariz yanlış" ifadeler OLMAMALI; konuyu eksik öğrenen veya yanlış yapılandıran bir öğrencinin gerçekten düşebileceği kavram yanılgılarından veya hatalı akıl yürütmelerden seçilmelidir.
+   - Doğru cevap açıkça belirtilmeli ve her seçenek için (doğru dâhil) kısa gerekçelerin yer aldığı detaylı pedagojik bir "Çözüm Açıklaması" eklenmelidir.
 """
 
     acik_uclu_blok = """
@@ -222,13 +250,28 @@ def build_prompt(unite_adi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
     baglam_soru_sayisi = max(soru_sayisi, 5) if baglam_temelli_mi else soru_sayisi
 
     baglam_temelli_blok = """
-5. **Bağlam Temelli Soru Kurgusu (ÖSYM / TYMM Mantığı — ZORUNLU):**
-   - Önce TEK, uzun ve zengin bir bağlam metni (öncül) yazılmalıdır. Bu metin en az 150-250 kelime uzunluğunda olmalı; birden fazla cümle/paragraftan oluşan, ayrıntılı bir arşiv belgesi alıntısı, seyahatname parçası, tarihçi değerlendirmesi, karşılaştırmalı tablo/kronoloji anlatımı ya da özgün olay anlatımı şeklinde kurgulanmalıdır. Metin; kişi, yer, tarih, sebep-sonuç ilişkisi gibi somut ayrıntılar içermeli, öğrencinin metni dikkatle okuyup çıkarım yapmasını gerektirecek yoğunlukta olmalıdır.
-   - Bu TEK bağlam metnine dayanan EN AZ 5 (beş) farklı soru üretilmelidir (gerçek ÖSYM sınavlarındaki "Bu parçaya göre..." mantığıyla aynı paragrafa bağlı ardışık soru grupları gibi). Sayı asla 5'in altında olmamalıdır; gerekirse metni bu kadar soruyu kaldıracak zenginlikte kurgula.
-   - Bağlama bağlı 5+ soru birbirinin aynısı ya da yakın varyasyonu OLMAMALI; her biri kazanımın ayrı bir bilişsel boyutunu ölçmelidir. Örnek dağılım: (1) metinden doğrudan bilgi/çıkarım, (2) neden-sonuç ilişkisi, (3) karşılaştırma/benzerlik-farklılık, (4) yargıya ulaşma/ulaşamama, (5) genelleme veya kavramsal ilişkilendirme. Mümkünse 5'ten fazla soru üretilerek çeşitlilik artırılabilir.
-   - **Çeldirici Kalitesi (ZORUNLU):** Her sorunun 5 seçeneğindeki (A-E) yanlış seçenekler (çeldiriciler) rastgele veya alakasız olmamalı; metinle ilişkili ama ustaca yanıltıcı olmalıdır — kısmen doğru ama eksik bilgi, metinde geçen ama soruyla ilgisiz bir ayrıntı, tarihsel olarak doğru ama bu bağlamda geçersiz bir bilgi, ya da mantık hatası içeren makul görünümlü ifadeler gibi teknikler kullanılmalıdır. Çeldiriciler öğrencinin dikkatsiz okumasını sınayacak nitelikte olmalı, "bariz yanlış" seçenekler kesinlikle kullanılmamalıdır.
+5. **Bağlam Temelli Soru Kurgusu (TYMM Bağlam Temelli Soru Yazım Kılavuzu — ZORUNLU SÜREÇ):**
+
+   Aşağıdaki 5 adımlı süreci sırasıyla, atlamadan uygula:
+
+   **ADIM 1 — Hedefin Netleştirilmesi:** Ölçülecek öğrenme çıktısı ve bu çıktıya ait süreç bileşenlerini (alt becerileri) net biçimde ayrıştır. Her soru, bu süreç bileşenlerinden birini hedeflemelidir.
+
+   **ADIM 2 — Bağlamın Kurgulanması:**
+   - Bağlam metni tam olarak İKİ (2) PARAGRAFTAN oluşmalıdır — ne tek paragraf ne de üçten fazla. İlk paragraf durumu/olayı/belgeyi tanıtmalı, ikinci paragraf ayrıntı, gelişme veya farklı bir bakış açısı/veri sunarak metni derinleştirmelidir.
+   - Tarih dersi için özgün, günlük-hayat karşılığı: bir tarihçinin/araştırmacının karşılaşacağı türden "birincil veya ikincil kaynak" niteliğinde bir materyal (bir hatırat kesiti, dönemin gazete haberi, arşiv belgesi, seyahatname parçası, müze objesi tasviri, tarihçi değerlendirmesi, edebî metin/mektup vb.) kullanılmalıdır. Bağlam yalnızca bir "dekor" olmamalı, öğrenciye gerçek bir tarihçinin yapacağı türden karmaşık ve yapılandırılmamış bir çıkarım görevi sunmalıdır.
+   - Belirli bir sosyoekonomik çevreye özgü, dar ve yabancılaştırıcı referanslardan kaçınılmalı; öğrencinin kolayca kendini içine yerleştirebileceği, erişilebilir ve özgün (authentic) bir kurgu tercih edilmelidir.
+   - Metindeki dil yapısı, söz varlığı ve cümle uzunluğu 11. sınıf öğrencisinin bilişsel düzeyine uygun olmalı; gereksiz süslü/karmaşık cümlelerden, dekoratif ayrıntılardan kaçınılarak bilişsel yük en aza indirilmelidir.
+
+   **ADIM 3 — Süreç Bileşenlerini Ölçen Soruların Hazırlanması:**
+   - Bu TEK bağlam metnine dayanan EN AZ 5 (beş) farklı soru üretilmelidir; sayı asla 5'in altında olmamalı, gerekirse bu kadar soruyu kaldıracak zenginlikte kurgulanmalıdır.
+   - Sorular öğrenme çıktısının farklı süreç bileşenlerini/bilişsel boyutlarını ölçmelidir (ör. doğrudan bilgi/çıkarım, neden-sonuç ilişkisi, karşılaştırma, yargıya ulaşma/ulaşamama, genelleme). Birbirinin aynısı veya yakın varyasyonu olan sorular üretilmemelidir.
+   - **İpucu Zinciri Yasağı (ZORUNLU):** Sorular arasında bağımlılık kurulmamalıdır. Bir sorunun cevabı diğer sorunun ön koşulu olmamalı; "Bir önceki soruda bulduğunuz sonuca göre..." tarzı ifadeler KESİNLİKLE kullanılmamalıdır. Bunun yerine her soru "Bu parçaya göre...", "Metinde anlatılanlara göre..." gibi ortak bağlama bağımsız şekilde atıfta bulunmalı; ilk soruyu cevaplayamayan bir öğrenci de metne dönüp ikinci soruyu rahatça cevaplayabilmelidir.
+   - Soru kökü kuralları: (a) Çift olumsuzluk içeren ifadeler ("...olmadığı söylenemez?" gibi) kullanılmamalı; olumsuzluk gerekiyorsa tek ve net olmalı, kelime koyu/altı çizili vurgulanmalıdır. (b) "Sizce", "Size göre" gibi öznel ifadeler kullanılmamalı; "Metne göre", "Bu parçadan hareketle" gibi metne dayalı nesnel ifadeler tercih edilmelidir. (c) Soru kökünde konu tekrar anlatılmamalı/genişletilmemeli; bilgi bağlamda kalmalı, soru kökü yalnızca öğrenciyi cevaba yönlendirmelidir.
    - Bağlam metni yalnızca bir kez, sorular grubunun en başında verilmeli; her soru öncesinde tekrarlanmamalı, sorular metnin altında "1.", "2.", "3." ... şeklinde sıralanmalıdır.
-   - Her bağlam temelli soru 5 seçenekli (A-E) olmalı, doğru cevap net belirtilmeli ve her biri için ayrıntılı, çeldiricilerin neden yanlış olduğunu da açıklayan bir "Çözüm Açıklaması" yazılmalıdır.
+
+   **ADIM 4 — Güçlü Çeldiricilerin Yapılandırılması:** Her sorunun 5 seçeneğindeki (A-E) yanlış seçenekler; metinle ilişkili ama ustaca yanıltıcı olmalıdır — kısmen doğru ama eksik bilgi, metinde geçen ama soruyla ilgisiz bir ayrıntı, tarihsel olarak doğru ama bu bağlamda geçersiz bir bilgi ya da mantık hatası içeren makul görünümlü ifadeler gibi teknikler kullanılmalıdır. Bkz. madde 3'teki seçenek uzunluğu ve biçim kuralları (eşit uzunluk, "Hepsi/Hiçbiri" yasağı, metinden birebir alıntı yasağı) bağlam temelli sorularda da aynı sıkılıkla geçerlidir.
+
+   **ADIM 5 — Bağlamın İşlevselliğinin Test Edilmesi (ZORUNLU ÖZ-DENETİM):** Her soruyu yazdıktan sonra şu soruyu kendine sor: "Öğrenci bu metni hiç okumadan, sadece ön bilgisiyle veya seçenekleri eleyerek bu soruyu cevaplayabilir mi?" Cevap "evet" ise o soru İŞLEVSİZ demektir; bağlamı ve/veya soruyu, cevabın mutlaka metindeki bilgiye/çıkarıma dayanacağı şekilde yeniden kurgula. Nihai çıktıya bu öz-denetimden geçtiğini gösteren bir "Bağlam İşlevsellik Notu" eklemene gerek yok; sadece bu testi geçen sorular üret.
 """
 
     kaynak_blok = ""
@@ -246,7 +289,7 @@ def build_prompt(unite_adi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
 ---
 """
 
-    prompt = f"""Sen Türkiye Yüzyılı Maarif Modeli (TYMM) standartlarına hakim, ÖSYM tarzında üst düzey bilişsel ölçme değerlendirme soruları hazırlayan uzman bir Tarih soru yazarısın.
+    prompt = f"""Sen Türkiye Yüzyılı Maarif Modeli (TYMM) Bağlam Temelli Çoktan Seçmeli Soru Yazım Kılavuzu'na ve ÖSYM ölçme-değerlendirme standartlarına hakim, üst düzey bilişsel soru hazırlayan, alanında yılların verdiği tecrübeye sahip bir Tarih öğretmeni/soru yazarısın.
 
 Aşağıdaki parametreler doğrultusunda {"aynı bağlam metnine dayanan EN AZ " + str(baglam_soru_sayisi) + " adet" if baglam_temelli_mi else str(soru_sayisi) + " adet"} nitelikli 11. Sınıf Tarih sorusu oluştur:
 
@@ -264,17 +307,21 @@ Aşağıdaki parametreler doğrultusunda {"aynı bağlam metnine dayanan EN AZ "
 ---
 {kaynak_blok}
 ### ✍️ SORU YAZIM KURALLARI VE BİÇİMLENDİRME:
+{uslup_blok}
 1. **Bağlam Metni (Öncül):**
    - Sorunun başında mutlaka tarihsel bir bağlam (birinci elden arşiv belgesi, seyahatname alıntısı, tarihçi görüşü, karşılaştırma tablosu veya tarihsel olay özeti) yer almalıdır.
    - Metin özgün, tarihsel gerçekliklere sadık ve edebi dili güçlü olmalıdır.
+   - Bağlam yalnızca bir dekor olmamalı, sorulan sorunun cevabı mutlaka bu metnin okunup anlaşılmasına bağlı olmalıdır (bkz. Adım 5 — İşlevsellik Testi).
 
 2. **Soru Kökü:**
    - Kazanımda hedeflenen beceriyi (analiz, çıkarım, tarihsel empati, karşılaştırma vb.) doğrudan ölçmelidir.
    - "...yargılardan hangisine ulaşılabilir / ulaşılamaz?" veya "...aşağıdakilerden hangisi gösterilebilir / gösterilemez?" şeklinde net olmalıdır.
+   - Çift olumsuzluk ve öznel ifadelerden kaçınılmalı (bkz. Adım 3).
 {coktan_secmeli_blok if "Çoktan Seçmeli" in soru_tipi or "ÖSYM" in soru_tipi else ""}{acik_uclu_blok if "Açık Uçlu" in soru_tipi or "Klasik" in soru_tipi else ""}{baglam_temelli_blok if baglam_temelli_mi else ""}
 6. **Genel Kalite Kriterleri:**
    - Sorular birbirini tekrar etmemeli, her biri farklı bir alt beceriyi veya bakış açısını ölçmelidir.
    - Tarihsel doğruluk esastır; kurgusal ama tarihe sadık bağlam metinleri kullanılabilir (kaynak materyal yüklenmişse yukarıdaki zorunlu kurala uy).
+   - Metin insan bir eğitimci tarafından yazılmış doğallıkta olmalı; yapay zekâ üslubu, klişe kalıplar ve tekdüze cümle yapıları kullanılmamalıdır (bkz. madde 0).
 
 Lütfen çıktıyı şık ve okunaklı bir Markdown formatında, her soruyu numaralandırarak sun.
 """
@@ -345,19 +392,41 @@ with st.sidebar:
 
     st.divider()
     st.header("🤖 AI ile Doğrudan Üretim")
-    if not ANTHROPIC_MEVCUT:
-        st.warning("`anthropic` paketi kurulu değil. Kurmak için: `pip install anthropic`")
-    api_key = st.text_input(
-        "Anthropic API Anahtarı:",
-        type="password",
-        help="Anahtarınız yalnızca bu oturumda kullanılır, hiçbir yerde saklanmaz."
+
+    saglayici = st.radio(
+        "AI Sağlayıcısı:",
+        options=["Anthropic (Claude)", "Google (Gemini)"],
+        horizontal=True
     )
-    model_secimi = st.selectbox(
-        "Model:",
-        options=["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"],
-        index=0,
-        help="Güncel model listesi Anthropic tarafından değişebilir; gerekirse buradaki değerleri güncelleyin."
-    )
+
+    if saglayici == "Anthropic (Claude)":
+        if not ANTHROPIC_MEVCUT:
+            st.warning("`anthropic` paketi kurulu değil. Kurmak için: `pip install anthropic`")
+        api_key = st.text_input(
+            "Anthropic API Anahtarı:",
+            type="password",
+            help="Anahtarınız yalnızca bu oturumda kullanılır, hiçbir yerde saklanmaz."
+        )
+        model_secimi = st.selectbox(
+            "Model:",
+            options=["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"],
+            index=0,
+            help="Güncel model listesi Anthropic tarafından değişebilir; gerekirse buradaki değerleri güncelleyin."
+        )
+    else:
+        if not GEMINI_MEVCUT:
+            st.warning("`google-generativeai` paketi kurulu değil. Kurmak için: `pip install google-generativeai`")
+        api_key = st.text_input(
+            "Google Gemini API Anahtarı:",
+            type="password",
+            help="Anahtarınız yalnızca bu oturumda kullanılır, hiçbir yerde saklanmaz. Google AI Studio üzerinden alabilirsiniz."
+        )
+        model_secimi = st.selectbox(
+            "Model:",
+            options=["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
+            index=0,
+            help="Güncel model listesi Google tarafından değişebilir; ai.google.dev üzerinden kontrol edip gerekirse buradaki değerleri güncelleyin."
+        )
 
 # ---- Ana Ekran ----
 col1, col2 = st.columns([2, 1])
@@ -464,7 +533,7 @@ with col_btn0:
         "✨ Soruyu Şimdi Üret",
         use_container_width=True,
         type="primary",
-        disabled=not ANTHROPIC_MEVCUT
+        disabled=not (ANTHROPIC_MEVCUT or GEMINI_MEVCUT)
     )
 
 with col_btn1:
@@ -506,20 +575,26 @@ st.success("✅ Prompt başarıyla kurgulandı! Yukarıdaki metni kopyalayıp do
 
 # ---- Doğrudan AI Üretimi ----
 if uret_tiklandi:
-    if not ANTHROPIC_MEVCUT:
+    if saglayici == "Anthropic (Claude)" and not ANTHROPIC_MEVCUT:
         st.error("`anthropic` paketi kurulu değil. Terminalde `pip install anthropic` çalıştırıp uygulamayı yeniden başlatın.")
+    elif saglayici == "Google (Gemini)" and not GEMINI_MEVCUT:
+        st.error("`google-generativeai` paketi kurulu değil. Terminalde `pip install google-generativeai` çalıştırıp uygulamayı yeniden başlatın.")
     elif not api_key:
-        st.error("Lütfen sol menüden Anthropic API anahtarınızı girin.")
+        st.error(f"Lütfen sol menüden {saglayici} API anahtarınızı girin.")
     else:
         with st.spinner("Soru üretiliyor, lütfen bekleyin..."):
             try:
-                st.session_state.uretilen_soru = soru_uret_api(api_key, model_secimi, generated_prompt)
-            except anthropic.AuthenticationError:
-                st.error("API anahtarı geçersiz görünüyor. Lütfen kontrol edip tekrar deneyin.")
-            except anthropic.APIStatusError as e:
-                st.error(f"API hatası: {e}")
+                if saglayici == "Anthropic (Claude)":
+                    st.session_state.uretilen_soru = soru_uret_api(api_key, model_secimi, generated_prompt)
+                else:
+                    st.session_state.uretilen_soru = soru_uret_gemini(api_key, model_secimi, generated_prompt)
             except Exception as e:
-                st.error(f"Beklenmeyen bir hata oluştu: {e}")
+                if ANTHROPIC_MEVCUT and isinstance(e, anthropic.AuthenticationError):
+                    st.error("API anahtarı geçersiz görünüyor. Lütfen kontrol edip tekrar deneyin.")
+                elif ANTHROPIC_MEVCUT and isinstance(e, anthropic.APIStatusError):
+                    st.error(f"API hatası: {e}")
+                else:
+                    st.error(f"Beklenmeyen bir hata oluştu: {e}")
 
 if st.session_state.uretilen_soru:
     st.divider()
