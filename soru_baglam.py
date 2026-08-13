@@ -4,13 +4,14 @@ import pandas as pd
 import pypdf
 import streamlit as st
 import google.generativeai as genai
+from openai import OpenAI
 from docx import Document
-from docx.shared import Pt, Inches, RGBColor
+from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 # --- Sayfa Yapılandırması ---
 st.set_page_config(
-    page_title="11. Sınıf Tarih - ÖSYM Soru Üreteci",
+    page_title="11. Sınıf Tarih - Çoklu AI Soru Üreteci",
     page_icon="📜",
     layout="wide"
 )
@@ -35,7 +36,7 @@ def build_system_prompt(guideline_text: str, question_mode: str, exam_type: str,
     
     if question_mode == "Klasik ÖSYM (TYT / AYT)":
         mode_instruction = f"""
-Soru Tipi: KLASİK ÖSYM TARZI İSTAKNİ/BAĞIMSIZ SORULAR (Sınav Türü: {exam_type})
+Soru Tipi: KLASİK ÖSYM TARZI İŞTAKNİ/BAĞIMSIZ SORULAR (Sınav Türü: {exam_type})
 
 Eğer Sınav Türü 'TYT' ise:
 - Sorular yorum, nedensellik, tarihsel mantık yürütme, dönem zihniyetini kavrama ve öncüllü (I. II. III.) yapılarda olmalıdır.
@@ -73,9 +74,184 @@ Soruların hedef zorluk seviyesi KESİNLİKLE '{difficulty.upper()}' seviyesinde
    - Çeldiriciler kesinlikle göze çarpan "saçma" veya "kolay elenen" şıklar olmamalıdır.
    - Çeldiricilerin her biri, konu hakkında yüzeysel bilgisi olan bir öğrencinin düşebileceği, tarihsel olarak mantıklı görünen ancak bağlamdaki/sorudaki ince mantık örgüsünü veya zamansal kronolojiyi ıskalayan **güçlü yanıltıcılardan** oluşmalıdır.
 3. **Aşırı Titiz Kalite Puanlaması:** Ürettiğin soruları acımasızca eleştir. Gerçekten ÖSYM derecelendirme sorusu niteliğindeyse yüksek puan (90-100) ver, basit kaldıysa puanı düşür ve gerekçesini belirt.
-4. Yanıt formatın KESİNLİKLE geçerli bir JSON objesi olmalıdır.
+4. Yanıt formatın KESİNLİKLE geçerli bir JSON objesi olmalıdır. Başka hiçbir açıklama veya ön metin yazma.
 """
     return prompt
+
+def generate_with_ai_provider(
+    provider: str,
+    model_name: str,
+    api_key: str,
+    system_prompt: str,
+    user_message: str
+) -> str:
+    """Seçilen yapay zeka sağlayıcısına göre istek atarak JSON yanıtını döndürür."""
+    
+    # 1. GOOGLE GEMINI
+    if provider == "Google Gemini":
+        genai.configure(api_key=api_key)
+        generation_config = {
+            "response_mime_type": "application/json",
+            "temperature": 0.35,
+            "top_p": 0.95
+        }
+        model = genai.GenerativeModel(
+            model_name=model_name,
+            system_instruction=system_prompt,
+            generation_config=generation_config
+        )
+        response = model.generate_content(user_message)
+        return response.text
+
+    # 2. OPENAI (GPT-4o)
+    elif provider == "OpenAI":
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model=model_name,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.35
+        )
+        return response.choices[0].message.content
+
+    # 3. DEEPSEEK
+    elif provider == "DeepSeek":
+        client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+        response = client.chat.completions.create(
+            model=model_name,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.35
+        )
+        return response.choices[0].message.content
+
+    # 4. GROQ (Llama 3)
+    elif provider == "Groq (Llama 3)":
+        client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+        response = client.chat.completions.create(
+            model=model_name,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.35
+        )
+        return response.choices[0].message.content
+
+    else:
+        raise ValueError("Geçersiz sağlayıcı seçimi.")
+
+def generate_questions(
+    provider: str,
+    model_name: str,
+    api_key: str,
+    system_prompt: str,
+    book_text: str,
+    outcomes: str,
+    num_items: int,
+    difficulty: str,
+    question_mode: str,
+    exam_type: str
+) -> list:
+    """Seçilen AI servisini kullanarak ÖSYM standartlarında soruları üretir."""
+    
+    if question_mode == "Klasik ÖSYM (TYT / AYT)":
+        json_structure_instruction = """
+Üreteceğin JSON yapısı KESİNLİKLE kök anahtarı "sorular" olan bir obje olmalıdır:
+{
+  "sorular": [
+    {
+      "soru_no": 1,
+      "sinav_turu": "TYT",
+      "zorluk_seviyesi": "Zor",
+      "soru_kok": "Tarihsel öncüller veya metin içeren ÖSYM tarzı soru kökü...",
+      "secenekler": {
+        "A": "Güçlü çeldirici veya doğru cevap",
+        "B": "Güçlü çeldirici veya doğru cevap",
+        "C": "Güçlü çeldirici veya doğru cevap",
+        "D": "Güçlü çeldirici veya doğru cevap",
+        "E": "Güçlü çeldirici veya doğru cevap"
+      },
+      "dogru_cevap": "A",
+      "cozum_aciklamasi": "Detaylı ÖSYM tarzı akademik çözüm gerekçesi..."
+    }
+  ]
+}
+"""
+        prompt_goal = f"{num_items} adet bağımsız, 5 seçenekli Klasik ÖSYM ({exam_type}) sorusu"
+    else:
+        json_structure_instruction = """
+Üreteceğin JSON yapısı KESİNLİKLE kök anahtarı "baglam_setleri" olan bir obje olmalıdır:
+{
+  "baglam_setleri": [
+    {
+      "baglam_id": 1,
+      "zorluk_seviyesi": "Zor",
+      "kalite_skoru": 95,
+      "kalite_degerlendirmesi": "Açıklama...",
+      "baglam_metni": "Bağlam metni...",
+      "sorular": [
+        {
+          "soru_no": 1,
+          "soru_kok": "Soru kökü...",
+          "secenekler": {
+            "A": "A şıkkı",
+            "B": "B şıkkı",
+            "C": "C şıkkı",
+            "D": "D şıkkı",
+            "E": "E şıkkı"
+          },
+          "dogru_cevap": "A",
+          "cozum_aciklamasi": "Açıklama..."
+        }
+      ]
+    }
+  ]
+}
+"""
+        prompt_goal = f"{num_items} adet Bağlam Seti (her bağlamda 3-4 soru)"
+
+    user_message = f"""
+Aşağıdaki ders kitabı içeriğini ve öğrenme çıktılarını kullanarak {prompt_goal} oluştur.
+
+=== HEDEF ZORLUK SEVİYESİ ===
+{difficulty}
+
+=== ÖĞRENME ÇIKTILARI / KAZANIMLAR ===
+{outcomes}
+
+=== DERS KİTABI METIN BÖLÜMÜ ===
+{book_text[:18000]}
+
+Lütfen belirlenen üst düzey zorluk ve güçlü çeldirici standartlarına KESİNLİKLE uyarak yukarıdaki JSON formatında yanıt ver.
+
+{json_structure_instruction}
+"""
+
+    try:
+        response_text = generate_with_ai_provider(provider, model_name, api_key, system_prompt, user_message)
+        data = json.loads(response_text)
+        
+        target_key = "sorular" if question_mode == "Klasik ÖSYM (TYT / AYT)" else "baglam_setleri"
+        
+        if isinstance(data, dict):
+            return data.get(target_key, [])
+        elif isinstance(data, list):
+            return data
+        else:
+            st.error("Model beklenmeyen bir JSON veri yapısı döndürdü.")
+            return []
+        
+    except Exception as e:
+        st.error(f"{provider} ile soru üretimi sırasında bir hata oluştu: {e}")
+        return []
 
 def create_word_document(results: list, question_mode: str) -> io.BytesIO:
     """Üretilen soru setlerini şık ve düzenli bir Word (.docx) belgesine dönüştürür."""
@@ -170,184 +346,39 @@ def create_word_document(results: list, question_mode: str) -> io.BytesIO:
     target_stream.seek(0)
     return target_stream
 
-def generate_questions_with_fallback(
-    api_key: str,
-    system_prompt: str,
-    user_message: str
-):
-    """
-    Erişilebilir kararlı gelişmiş akıl yürütme modellerini sırayla dener.
-    """
-    genai.configure(api_key=api_key)
-
-    candidate_models = [
-        "gemini-1.5-pro",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "models/gemini-1.5-pro",
-        "models/gemini-1.5-flash"
-    ]
-
-    last_exception = None
-
-    generation_config = {
-        "response_mime_type": "application/json",
-        "temperature": 0.35,
-        "top_p": 0.95
-    }
-
-    for model_name in candidate_models:
-        try:
-            model = genai.GenerativeModel(
-                model_name=model_name,
-                system_instruction=system_prompt,
-                generation_config=generation_config
-            )
-            response = model.generate_content(user_message)
-            return response.text
-        except Exception as err:
-            last_exception = err
-            continue
-
-    try:
-        available_models = genai.list_models()
-        for m in available_models:
-            if "generateContent" in m.supported_generation_methods:
-                if "2.5" in m.name:
-                    continue
-                try:
-                    model = genai.GenerativeModel(
-                        model_name=m.name,
-                        system_instruction=system_prompt,
-                        generation_config=generation_config
-                    )
-                    response = model.generate_content(user_message)
-                    return response.text
-                except Exception as inner_err:
-                    last_exception = inner_err
-                    continue
-    except Exception as list_err:
-        pass
-
-    raise last_exception if last_exception else RuntimeError("Erişilebilir bir Gemini modeli bulunamadı.")
-
-def generate_questions(
-    api_key: str,
-    system_prompt: str,
-    book_text: str,
-    outcomes: str,
-    num_items: int,
-    difficulty: str,
-    question_mode: str,
-    exam_type: str
-) -> list:
-    """Gemini API kullanarak ÖSYM standartlarında soruları üretir."""
-    
-    if question_mode == "Klasik ÖSYM (TYT / AYT)":
-        json_structure_instruction = """
-Üreteceğin JSON yapısı KESİNLİKLE kök anahtarı "sorular" olan bir obje olmalıdır:
-{
-  "sorular": [
-    {
-      "soru_no": 1,
-      "sinav_turu": "TYT",
-      "zorluk_seviyesi": "Zor",
-      "soru_kok": "Tarihsel öncüller veya metin içeren ÖSYM tarzı soru kökü...",
-      "secenekler": {
-        "A": "Güçlü çeldirici veya doğru cevap",
-        "B": "Güçlü çeldirici veya doğru cevap",
-        "C": "Güçlü çeldirici veya doğru cevap",
-        "D": "Güçlü çeldirici veya doğru cevap",
-        "E": "Güçlü çeldirici veya doğru cevap"
-      },
-      "dogru_cevap": "A",
-      "cozum_aciklamasi": "Detaylı ÖSYM tarzı akademik çözüm gerekçesi..."
-    }
-  ]
-}
-"""
-        prompt_goal = f"{num_items} adet bağımsız, 5 seçenekli Klasik ÖSYM ({exam_type}) sorusu"
-    else:
-        json_structure_instruction = """
-Üreteceğin JSON yapısı KESİNLİKLE kök anahtarı "baglam_setleri" olan bir obje olmalıdır:
-{
-  "baglam_setleri": [
-    {
-      "baglam_id": 1,
-      "zorluk_seviyesi": "Zor",
-      "kalite_skoru": 95,
-      "kalite_degerlendirmesi": "Açıklama...",
-      "baglam_metni": "Bağlam metni...",
-      "sorular": [
-        {
-          "soru_no": 1,
-          "soru_kok": "Soru kökü...",
-          "secenekler": {
-            "A": "A şıkkı",
-            "B": "B şıkkı",
-            "C": "C şıkkı",
-            "D": "D şıkkı",
-            "E": "E şıkkı"
-          },
-          "dogru_cevap": "A",
-          "cozum_aciklamasi": "Açıklama..."
-        }
-      ]
-    }
-  ]
-}
-"""
-        prompt_goal = f"{num_items} adet Bağlam Seti (her bağlamda 3-4 soru)"
-
-    user_message = f"""
-Aşağıdaki ders kitabı içeriğini ve öğrenme çıktılarını kullanarak {prompt_goal} oluştur.
-
-=== HEDEF ZORLUK SEVİYESİ ===
-{difficulty}
-
-=== ÖĞRENME ÇIKTILARI / KAZANIMLAR ===
-{outcomes}
-
-=== DERS KİTABI METIN BÖLÜMÜ ===
-{book_text[:18000]}
-
-Lütfen belirlenen üst düzey zorluk ve güçlü çeldirici standartlarına KESİNLİKLE uyarak yukarıdaki JSON formatında yanıt ver.
-
-{json_structure_instruction}
-"""
-
-    try:
-        response_text = generate_questions_with_fallback(api_key, system_prompt, user_message)
-        data = json.loads(response_text)
-        
-        target_key = "sorular" if question_mode == "Klasik ÖSYM (TYT / AYT)" else "baglam_setleri"
-        
-        if isinstance(data, dict):
-            return data.get(target_key, [])
-        elif isinstance(data, list):
-            return data
-        else:
-            st.error("Model beklenmeyen bir JSON veri yapısı döndürdü.")
-            return []
-        
-    except Exception as e:
-        st.error(f"Soru üretimi sırasında bir hata oluştu: {e}")
-        return []
-
 # --- Arayüz Tasarımı ---
 
-st.title("📜 11. Sınıf Tarih Ders Kitabı - ÖSYM Soru Üreteci")
-st.markdown("ÖSYM ve MEB standartlarında, kaynak metne veya doğrudan müfredata dayalı 5 seçenekli soru bankası oluşturma aracı.")
+st.title("📜 11. Sınıf Tarih - Çoklu AI Destekli ÖSYM Soru Üreteci")
+st.markdown("ÖSYM ve MEB standartlarında, tercih edeceğiniz Yapay Zeka servisi ile 5 seçenekli yüksek kaliteli sorular üretin.")
 
-st.sidebar.header("⚙️ Ayarlar ve API")
+st.sidebar.header("🤖 Yapay Zeka Servis Seçimi")
 
-# API Key kontrolü
-user_api_key = st.sidebar.text_input("Google Gemini API Key", type="password")
+# Model ve Sağlayıcı Seçimi
+ai_provider = st.sidebar.selectbox(
+    "Sağlayıcı Seçiniz",
+    options=["Google Gemini", "DeepSeek", "OpenAI", "Groq (Llama 3)"]
+)
+
+# Seçilen sağlayıcıya göre model listesi ve API Key alanı
+if ai_provider == "Google Gemini":
+    model_name = st.sidebar.selectbox("Model", ["gemini-1.5-pro", "gemini-2.0-flash", "gemini-1.5-flash"])
+    secret_key_name = "GEMINI_API_KEY"
+elif ai_provider == "DeepSeek":
+    model_name = st.sidebar.selectbox("Model", ["deepseek-chat", "deepseek-coder"])
+    secret_key_name = "DEEPSEEK_API_KEY"
+elif ai_provider == "OpenAI":
+    model_name = st.sidebar.selectbox("Model", ["gpt-4o", "gpt-4o-mini"])
+    secret_key_name = "OPENAI_API_KEY"
+elif ai_provider == "Groq (Llama 3)":
+    model_name = st.sidebar.selectbox("Model", ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"])
+    secret_key_name = "GROQ_API_KEY"
+
+user_api_key = st.sidebar.text_input(f"{ai_provider} API Key", type="password")
 
 if user_api_key:
     api_key = user_api_key
-elif "GEMINI_API_KEY" in st.secrets:
-    api_key = st.secrets["GEMINI_API_KEY"]
+elif secret_key_name in st.secrets:
+    api_key = st.secrets[secret_key_name]
 else:
     api_key = ""
 
@@ -411,7 +442,7 @@ if st.button("🚀 ÖSYM Standartlarında Soruları Üret", type="primary"):
         final_book_text = book_pasted_text.strip()
 
     if not api_key:
-        st.warning("Lütfen sol menüden Gemini API anahtarınızı giriniz veya Secrets alanına ekleyiniz.")
+        st.warning(f"Lütfen sol menüden {ai_provider} API anahtarınızı giriniz veya Secrets alanına ekleyiniz.")
     elif not guideline_file:
         st.warning("Lütfen Soru Yazım Kılavuzu PDF dosyasını yükleyiniz.")
     elif not final_book_text:
@@ -422,9 +453,11 @@ if st.button("🚀 ÖSYM Standartlarında Soruları Üret", type="primary"):
         with st.spinner("Soru Yazım Kılavuzu taranıyor..."):
             guideline_text = extract_text_from_pdf(guideline_file)
             
-        with st.spinner(f"{difficulty_option} seviyesinde {question_mode} soruları üretiliyor..."):
+        with st.spinner(f"{ai_provider} ({model_name}) kullanılarak {difficulty_option} seviyesinde {question_mode} soruları üretiliyor..."):
             system_prompt = build_system_prompt(guideline_text, question_mode, exam_type, difficulty_option)
             results = generate_questions(
+                provider=ai_provider,
+                model_name=model_name,
                 api_key=api_key,
                 system_prompt=system_prompt,
                 book_text=final_book_text,
@@ -520,4 +553,3 @@ if "generated_results" in st.session_state and st.session_state["generated_resul
             file_name="osym_tarih_sorulari.json",
             mime="application/json"
         )
-
