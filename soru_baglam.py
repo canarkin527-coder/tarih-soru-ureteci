@@ -22,7 +22,7 @@ try:
 except ImportError:
     PYPDF_MEVCUT = False
 
-MAKS_KAYNAK_KARAKTER = 15000  # Prompt şişmesini önlemek için kaynak metinden alınacak azami karakter
+MAKS_KAYNAK_KARAKTER_VARSAYILAN = 150000  # ~35-40 bin token; Claude/Gemini'nin geniş bağlam penceresine göre makul bir varsayılan
 KUTUPHANE_KLASORU = Path(__file__).parent / "kaynak_kutuphane"  # Yüklenen dosyaların kalıcı olarak saklandığı yerel klasör
 KUTUPHANE_KLASORU.mkdir(exist_ok=True)
 
@@ -192,26 +192,43 @@ def yuklenen_dosyalari_isle(dosyalar):
 
 
 def soru_uret_api(api_key, model, prompt):
-    """Anthropic API'sini çağırarak promptu doğrudan bir soruya dönüştürür."""
+    """Anthropic API'sini çağırarak promptu doğrudan bir soruya dönüştürür.
+    Yanıt token sınırına takılıp yarım kaldıysa bunu tespit edip kullanıcıyı uyarır."""
     client = anthropic.Anthropic(api_key=api_key)
     response = client.messages.create(
         model=model,
-        max_tokens=8000,
+        max_tokens=16000,
         messages=[{"role": "user", "content": prompt}]
     )
     parcalar = [blok.text for blok in response.content if blok.type == "text"]
-    return "\n".join(parcalar)
+    metin = "\n".join(parcalar)
+    if response.stop_reason == "max_tokens":
+        metin += (
+            "\n\n---\n⚠️ **UYARI:** Yanıt, model çıktı sınırına (token limiti) takıldığı için yarım kalmış olabilir. "
+            "Soru sayısını azaltıp tekrar denemenizi veya soruları iki ayrı istek hâlinde ürettirmenizi öneririz."
+        )
+    return metin
 
 
 def soru_uret_gemini(api_key, model, prompt):
-    """Google Gemini API'sini çağırarak promptu doğrudan bir soruya dönüştürür."""
+    """Google Gemini API'sini çağırarak promptu doğrudan bir soruya dönüştürür.
+    Yanıt token sınırına takılıp yarım kaldıysa bunu tespit edip kullanıcıyı uyarır."""
     genai.configure(api_key=api_key)
     model_obj = genai.GenerativeModel(model)
     response = model_obj.generate_content(
         prompt,
-        generation_config=genai.types.GenerationConfig(max_output_tokens=8000)
+        generation_config=genai.types.GenerationConfig(max_output_tokens=16000)
     )
-    return response.text
+    metin = response.text
+    try:
+        if response.candidates[0].finish_reason == 2:  # MAX_TOKENS
+            metin += (
+                "\n\n---\n⚠️ **UYARI:** Yanıt, model çıktı sınırına (token limiti) takıldığı için yarım kalmış olabilir. "
+                "Soru sayısını azaltıp tekrar denemenizi veya soruları iki ayrı istek hâlinde ürettirmenizi öneririz."
+            )
+    except (IndexError, AttributeError):
+        pass
+    return metin
 
 
 def build_prompt(unite_adi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
@@ -228,6 +245,14 @@ def build_prompt(unite_adi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
    - Metinler bir yapay zekâ tarafından değil, alanında deneyimli bir tarih öğretmeni/soru yazarı tarafından kaleme alınmış gibi doğal, akıcı ve özgün bir Türkçeyle yazılmalıdır.
    - Yapay zekâ metinlerine özgü basmakalıp açılışlardan ("Günümüzde...", "Tarih boyunca...", "Bilindiği gibi...", "Şüphesiz ki..." gibi klişe girişlerden), aşırı sıfat yığmaktan ve yapay/şablon cümle kalıplarından kaçınılmalıdır.
    - Her bağlam metni kendine özgü, önceki metinlerin kalıbını tekrar etmeyen bir anlatım ve kurguyla yazılmalıdır; seri üretim hissi vermemelidir.
+"""
+
+    dogruluk_blok = """
+0b. **Tarihsel Doğruluk ve Halüsinasyon Önleme (ZORUNLU):**
+   - Kaynak materyal (aşağıda "YÜKLENEN KAYNAK MATERYAL(LER)" varsa) yüklenmişse, bağlam metinlerindeki TÜM somut bilgi (tarih, kişi, olay, sayısal veri) o kaynağa dayanmalıdır; kaynakta yer almayan uydurma bir tarih/isim/olay eklenmemelidir.
+   - Kaynak materyal yüklenmemişse iki yol izlenebilir: (a) genel olarak bilinen, tarihçilerce doğrulanmış gerçek olay/kişi/tarihleri kullan, ya da (b) tamamen kurgusal bir öncül kullanacaksan bunu gerçek bir tarihî kişiye ait olduğu izlenimi verecek şekilde SUNMA (ör. gerçek bir tarihî kişiye ait olmayan bir sözü ona atfetme, var olmayan bir arşiv belgesine gerçek bir kod/tarih numarası uydurma). Kurgusal bir karakter kullanıyorsan bunu jenerik bir isimle (ör. "dönemin bir sefaret kâtibi", "bölgeden geçen bir seyyah") yap; gerçek, doğrulanabilir bir tarihî şahsiyet gibi sunma.
+   - Emin olmadığın spesifik bir rakam, tarih ya da alıntı varsa, onu icat etmek yerine daha genel ama doğru bir ifadeyle (ör. "yüzyılın ortalarında", "kayda değer bir artışla") yaz.
+   - Sorunun doğru cevabı ve çözüm açıklaması, gerçek tarihsel bilgiyle çelişmemelidir; kurgusal bağlam kullanılsa bile çıkarımlar tarihsel mantığa ve bilinen genel çerçeveye sadık kalmalıdır.
 """
 
     coktan_secmeli_blok = """
@@ -249,7 +274,7 @@ def build_prompt(unite_adi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
     baglam_temelli_mi = "Bağlam Temelli" in soru_tipi
     baglam_soru_sayisi = max(soru_sayisi, 5) if baglam_temelli_mi else soru_sayisi
 
-    baglam_temelli_blok = """
+    baglam_temelli_blok = f"""
 5. **Bağlam Temelli Soru Kurgusu (TYMM Bağlam Temelli Soru Yazım Kılavuzu — ZORUNLU SÜREÇ):**
 
    Aşağıdaki 5 adımlı süreci sırasıyla, atlamadan uygula:
@@ -263,7 +288,7 @@ def build_prompt(unite_adi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
    - Metindeki dil yapısı, söz varlığı ve cümle uzunluğu 11. sınıf öğrencisinin bilişsel düzeyine uygun olmalı; gereksiz süslü/karmaşık cümlelerden, dekoratif ayrıntılardan kaçınılarak bilişsel yük en aza indirilmelidir.
 
    **ADIM 3 — Süreç Bileşenlerini Ölçen Soruların Hazırlanması:**
-   - Bu TEK bağlam metnine dayanan EN AZ 5 (beş) farklı soru üretilmelidir; sayı asla 5'in altında olmamalı, gerekirse bu kadar soruyu kaldıracak zenginlikte kurgulanmalıdır.
+   - Bu TEK bağlam metnine dayanan TAM OLARAK {baglam_soru_sayisi} farklı soru üretilmelidir; bu sayının altında kalınmamalı, gerekirse bu kadar soruyu kaldıracak zenginlikte kurgulanmalıdır.
    - Sorular öğrenme çıktısının farklı süreç bileşenlerini/bilişsel boyutlarını ölçmelidir (ör. doğrudan bilgi/çıkarım, neden-sonuç ilişkisi, karşılaştırma, yargıya ulaşma/ulaşamama, genelleme). Birbirinin aynısı veya yakın varyasyonu olan sorular üretilmemelidir.
    - **İpucu Zinciri Yasağı (ZORUNLU):** Sorular arasında bağımlılık kurulmamalıdır. Bir sorunun cevabı diğer sorunun ön koşulu olmamalı; "Bir önceki soruda bulduğunuz sonuca göre..." tarzı ifadeler KESİNLİKLE kullanılmamalıdır. Bunun yerine her soru "Bu parçaya göre...", "Metinde anlatılanlara göre..." gibi ortak bağlama bağımsız şekilde atıfta bulunmalı; ilk soruyu cevaplayamayan bir öğrenci de metne dönüp ikinci soruyu rahatça cevaplayabilmelidir.
    - Soru kökü kuralları: (a) Çift olumsuzluk içeren ifadeler ("...olmadığı söylenemez?" gibi) kullanılmamalı; olumsuzluk gerekiyorsa tek ve net olmalı, kelime koyu/altı çizili vurgulanmalıdır. (b) "Sizce", "Size göre" gibi öznel ifadeler kullanılmamalı; "Metne göre", "Bu parçadan hareketle" gibi metne dayalı nesnel ifadeler tercih edilmelidir. (c) Soru kökünde konu tekrar anlatılmamalı/genişletilmemeli; bilgi bağlamda kalmalı, soru kökü yalnızca öğrenciyi cevaba yönlendirmelidir.
@@ -291,7 +316,7 @@ def build_prompt(unite_adi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
 
     prompt = f"""Sen Türkiye Yüzyılı Maarif Modeli (TYMM) Bağlam Temelli Çoktan Seçmeli Soru Yazım Kılavuzu'na ve ÖSYM ölçme-değerlendirme standartlarına hakim, üst düzey bilişsel soru hazırlayan, alanında yılların verdiği tecrübeye sahip bir Tarih öğretmeni/soru yazarısın.
 
-Aşağıdaki parametreler doğrultusunda {"aynı bağlam metnine dayanan EN AZ " + str(baglam_soru_sayisi) + " adet" if baglam_temelli_mi else str(soru_sayisi) + " adet"} nitelikli 11. Sınıf Tarih sorusu oluştur:
+Aşağıdaki parametreler doğrultusunda TAM OLARAK {baglam_soru_sayisi if baglam_temelli_mi else soru_sayisi} adet nitelikli 11. Sınıf Tarih sorusu oluştur. Bu sayı bir üst sınır değil, kesin bir hedeftir; daha az soru üretip bırakmak KABUL EDİLEMEZ.
 
 ---
 ### 📋 SORU PARAMETRELERİ
@@ -302,12 +327,13 @@ Aşağıdaki parametreler doğrultusunda {"aynı bağlam metnine dayanan EN AZ "
 - **Anahtar Kavramlar:** {kavramlar}
 - **Soru Tipi:** {soru_tipi}
 - **Zorluk / Bilişsel Düzey:** {zorluk}
-- **Üretilecek Soru Sayısı:** {baglam_soru_sayisi if baglam_temelli_mi else soru_sayisi}
+- **Üretilecek Soru Sayısı (KESİN):** {baglam_soru_sayisi if baglam_temelli_mi else soru_sayisi}
 {"- **Özel Bağlam / Metin Notu:** " + ek_baglam if ek_baglam else ""}
 ---
 {kaynak_blok}
 ### ✍️ SORU YAZIM KURALLARI VE BİÇİMLENDİRME:
 {uslup_blok}
+{dogruluk_blok}
 1. **Bağlam Metni (Öncül):**
    - Sorunun başında mutlaka tarihsel bir bağlam (birinci elden arşiv belgesi, seyahatname alıntısı, tarihçi görüşü, karşılaştırma tablosu veya tarihsel olay özeti) yer almalıdır.
    - Metin özgün, tarihsel gerçekliklere sadık ve edebi dili güçlü olmalıdır.
@@ -322,6 +348,12 @@ Aşağıdaki parametreler doğrultusunda {"aynı bağlam metnine dayanan EN AZ "
    - Sorular birbirini tekrar etmemeli, her biri farklı bir alt beceriyi veya bakış açısını ölçmelidir.
    - Tarihsel doğruluk esastır; kurgusal ama tarihe sadık bağlam metinleri kullanılabilir (kaynak materyal yüklenmişse yukarıdaki zorunlu kurala uy).
    - Metin insan bir eğitimci tarafından yazılmış doğallıkta olmalı; yapay zekâ üslubu, klişe kalıplar ve tekdüze cümle yapıları kullanılmamalıdır (bkz. madde 0).
+
+### ⏱️ ÇIKTI UZUNLUĞU YÖNETİMİ (ZORUNLU):
+İstenen soru sayısını tamamlamak, açıklamaları uzatmaktan HER ZAMAN daha önceliklidir. Eğer yer/uzunluk kısıtı hissedersen:
+1. Önce çözüm açıklamalarını kısalt (her seçenek için 1-2 cümle yeterlidir, uzun paragraflara gerek yok).
+2. Bağlam metnini gereksiz yere uzatma; 2 paragraf kuralına sadık kal, fazladan süsleme ekleme.
+3. Asla son soruyu yarım bırakma veya istenen sayıdan daha azını üretip bitirme; gerekirse tüm sorular için açıklamaları daha da sadeleştir ama SAYIYI TAMAMLA.
 
 Lütfen çıktıyı şık ve okunaklı bir Markdown formatında, her soruyu numaralandırarak sun.
 """
@@ -382,6 +414,8 @@ with st.sidebar:
     )
     if "Bağlam Temelli" in soru_tipi and soru_sayisi < 5:
         st.caption("ℹ️ Bağlam temelli sorularda ÖSYM/TYMM mantığı gereği aynı metne dayalı en az 5 soru istenecektir.")
+    if soru_sayisi > 10:
+        st.caption("⚠️ 10'un üzerindeki sayılarda model çıktı (token) sınırına takılıp yarım kalabilir. Önerimiz: büyük setleri 8-10'luk gruplar hâlinde ayrı ayrı ürettirmeniz.")
 
     st.divider()
     st.header("🏷️ Odak Kavramlar (İsteğe Bağlı)")
@@ -467,6 +501,14 @@ yeni_dosyalar = st.file_uploader(
 
 st.caption(f"📁 Dosyalar bu bilgisayarda kalıcı olarak şurada saklanır: `{KUTUPHANE_KLASORU}`")
 
+maks_kaynak_karakter = st.slider(
+    "Modele gönderilecek azami kaynak metni (karakter):",
+    min_value=20000, max_value=800000, value=MAKS_KAYNAK_KARAKTER_VARSAYILAN, step=10000,
+    help="Kütüphanedeki metin bu sınırı aşarsa yalnızca ilk N karakter modele gönderilir. Kaba tahmin: 1 token ≈ 4 karakter "
+         "(150.000 karakter ≈ 35-40 bin token). Çok yüksek değerler API maliyetini ve yanıt süresini artırır; "
+         "kullandığınız modelin bağlam penceresini (context window) aşmadığından emin olun."
+)
+
 col_yukle, col_temizle = st.columns([1, 1])
 with col_yukle:
     if st.button("➕ Yüklenen Dosyaları Kütüphaneye Kaydet", use_container_width=True, disabled=not yeni_dosyalar):
@@ -496,11 +538,11 @@ if st.session_state.kaynak_dosya_adlari:
             st.session_state.kaynak_metin, st.session_state.kaynak_dosya_adlari = kutuphaneyi_diskten_yukle()
             st.rerun()
 
-    if toplam_karakter > MAKS_KAYNAK_KARAKTER:
+    if toplam_karakter > maks_kaynak_karakter:
         st.warning(
             f"Kütüphane {toplam_karakter:,} karakter içeriyor; prompt şişmesini önlemek için modele gönderilirken "
-            f"yalnızca ilk {MAKS_KAYNAK_KARAKTER:,} karakter kullanılacaktır. Çok büyük kaynaklarda, "
-            f"ilgili kısmı 'Özel Bağlam Notu' alanına özetleyerek belirtmeniz daha isabetli sonuç verir."
+            f"yalnızca ilk {maks_kaynak_karakter:,} karakter kullanılacaktır. Yukarıdaki kaydırıcıdan bu sınırı "
+            f"yükseltebilir veya ilgili kısmı 'Özel Bağlam Notu' alanına özetleyerek belirtebilirsiniz."
         )
 
     with st.expander("Kütüphane içeriğini önizle"):
@@ -516,14 +558,13 @@ st.subheader("🚀 Yapay Zeka Soru Üretim Promptu")
 generated_prompt = build_prompt(
     unite_secimi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
     odak_kavramlar, ek_baglam, soru_sayisi,
-    kaynak_metin=st.session_state.kaynak_metin[:MAKS_KAYNAK_KARAKTER]
+    kaynak_metin=st.session_state.kaynak_metin[:maks_kaynak_karakter]
 )
 
 st.text_area(
     "Aşağıdaki promptu LLM (Claude, ChatGPT, Gemini) modeline yapıştırarak sorunuzu üretebilirsiniz:",
     value=generated_prompt,
-    height=320,
-    key="prompt_output"
+    height=320
 )
 
 col_btn0, col_btn1, col_btn2, col_btn3 = st.columns(4)
