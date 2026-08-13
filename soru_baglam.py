@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime
 
 from mufredat_verisi import MUFREDAT
+from mufredat_baglam import UNITE_BAGLAM, CIKTI_BAGLAM
 
 try:
     import anthropic
@@ -182,6 +183,28 @@ def build_prompt(unite, cikti_kod, cikti_tam, surec_metinleri, soru_kategorisi,
     baglam_temelli = (soru_kategorisi == "Bağlam Temelli")
     surec_listesi = "\n".join(f"   - {s}" for s in surec_metinleri)
 
+    # --- Öğretim programı bağlamı (mufredat_baglam.py) ---
+    ub = UNITE_BAGLAM.get(unite, {})
+    cb = CIKTI_BAGLAM.get(cikti_kod, {})
+    kavramlar = ", ".join(ub.get("anahtar_kavramlar", []))
+    beceriler = "; ".join(ub.get("alan_becerileri", []))
+    degerler = ", ".join(ub.get("degerler", []))
+    olcumlenen_beceri = cb.get("olcumlenen_beceri", "")
+    somut_icerik = cb.get("somut_icerik", [])
+    somut_listesi = "\n".join(f"   - {s}" for s in somut_icerik)
+
+    program_blok = f"""
+### 📖 ÖĞRETİM PROGRAMI BAĞLAMI (TYMM — bu çıktıya özgü, ZORUNLU KULLANIM):
+- **Bu çıktının ölçtüğü merkezî beceri:** {olcumlenen_beceri}
+- **Ünitenin anahtar kavramları:** {kavramlar}
+- **İlgili alan becerileri:** {beceriler}
+- **İşlenen değerler:** {degerler}
+- **Bu çıktı işlenirken programın öngördüğü SOMUT tarihsel içerik (olay, antlaşma, kişi, olgu):**
+{somut_listesi}
+
+**ZORUNLU:** Sorular ve bağlam metinleri, yukarıdaki SOMUT tarihsel içerikten beslenmelidir. Soyut/genel ifadeler yerine bu listedeki gerçek olay, antlaşma ve kişilere dayan. Birden fazla soru üretiyorsan, HER SORU bu somut içerikten FARKLI bir öğeyi merkeze alsın; hepsi aynı olayı/temayı tekrarlamasın. Böylece sorular hem müfredata birebir uyar hem de birbirinden gerçekten farklılaşır.
+"""
+
     uslup_blok = """
 0. **Yazım Üslubu (ZORUNLU):** Metinler deneyimli bir tarih öğretmeni tarafından kaleme alınmış gibi doğal, akıcı ve özgün bir Türkçeyle yazılmalı; yapay zekâ klişelerinden ("Günümüzde...", "Tarih boyunca...", "Bilindiği gibi...") ve şablon cümlelerden kaçınılmalıdır. Her bağlam metni kendine özgü olmalı, seri üretim hissi vermemelidir.
 """
@@ -209,6 +232,7 @@ def build_prompt(unite, cikti_kod, cikti_tam, surec_metinleri, soru_kategorisi,
 **ADIM 3 — Sorular:**
 - Bu TEK bağlam metnine dayanan TAM OLARAK {soru_sayisi} soru üretilmelidir; bu sayının altında kalınmamalıdır.
 - Her soru farklı bir süreç bileşenini/bilişsel boyutu ölçmeli (bilgi/çıkarım, neden-sonuç, karşılaştırma, yargı, genelleme). Sorular birbirinin tekrarı olmamalı.
+- **Soru Kökü Çeşitliliği (ZORUNLU):** Soruların soru kökü kalıpları da çeşitlenmeli; hepsi "hangi yargıya ulaşılabilir" veya "hangi konuya yönelmeli" gibi tek bir kalıpta olmamalıdır. Farklı köklerden yararlan: neden-sonuç ("...in temel nedeni aşağıdakilerden hangisidir?"), karşılaştırma ("...ile ...arasındaki temel fark nedir?"), çıkarım ("...den hangisi çıkarılabilir?"), yargı ("...değerlendirmelerinden hangisine ulaşılamaz?"). En az iki farklı kök kalıbı kullanılmalıdır.
 - **İpucu Zinciri Yasağı:** Sorular arasında bağımlılık kurulmamalı; "bir önceki soruda bulduğunuz sonuca göre" tarzı ifadeler KULLANILMAMALI. Her soru bağlama bağımsız atıfta bulunmalı ("Bu parçaya göre...").
 - Soru kökü: çift olumsuzluk ve "Sizce" gibi öznel ifadeler kullanılmamalı; "Metne göre" gibi nesnel ifadeler tercih edilmeli. Soru kökünde konu tekrar anlatılmamalı.
 - Bağlam metni yalnızca bir kez en başta verilmeli; sorular altında 1., 2., 3. şeklinde sıralanmalı.
@@ -253,6 +277,7 @@ Aşağıda TAM OLARAK belirtilen ünite, öğrenme çıktısı ve süreç bileş
 - **Üretilecek Soru Sayısı (KESİN):** {soru_sayisi}
 {"- **Özel Bağlam Notu:** " + ek_baglam if ek_baglam else ""}
 ---
+{program_blok}
 {kaynak_blok}
 ### ✍️ YAZIM KURALLARI:
 {uslup_blok}{dogruluk_blok}{kurgu_blok}
