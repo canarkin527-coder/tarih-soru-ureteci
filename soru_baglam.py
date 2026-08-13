@@ -124,9 +124,21 @@ def build_prompt(unite_adi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
    - Detaylı ve puanlama kriterlerini içeren bir "Dereceli Puanlama Anahtarı (Rubrik)" eklenmelidir.
 """
 
+    baglam_temelli_mi = "Bağlam Temelli" in soru_tipi
+    baglam_soru_sayisi = max(soru_sayisi, 2) if baglam_temelli_mi else soru_sayisi
+
+    baglam_temelli_blok = """
+5. **Bağlam Temelli Soru Kurgusu (ÖSYM / TYMM Mantığı — ZORUNLU):**
+   - Önce TEK, uzun ve zengin bir bağlam metni (öncül) yazılmalıdır. Bu metin en az 120-180 kelime uzunluğunda olmalı; birden fazla cümle/paragraftan oluşan, ayrıntılı bir arşiv belgesi alıntısı, seyahatname parçası, tarihçi değerlendirmesi, karşılaştırmalı tablo/kronoloji anlatımı ya da özgün olay anlatımı şeklinde kurgulanmalıdır. Metin; kişi, yer, tarih, sebep-sonuç ilişkisi gibi somut ayrıntılar içermeli, öğrencinin metni dikkatle okuyup çıkarım yapmasını gerektirecek yoğunlukta olmalıdır.
+   - Bu TEK bağlam metnine dayanan EN AZ 2 (iki) farklı soru üretilmelidir (gerçek ÖSYM sınavlarındaki "Bu parçaya göre..." mantığıyla aynı paragrafa bağlı ardışık sorular gibi).
+   - Bağlama bağlı sorular birbirinin aynısı olmamalı; her biri kazanımın farklı bir boyutunu (ör. biri doğrudan bilgi/çıkarım, diğeri neden-sonuç ilişkisi, bir diğeri karşılaştırma veya yargıya ulaşma/ulaşamama) ölçmelidir.
+   - Bağlam metni yalnızca bir kez, sorular grubunun en başında verilmeli; her soru öncesinde tekrarlanmamalı, sorular metnin altında "1.", "2." şeklinde sıralanmalıdır.
+   - Her bağlam temelli soru da 5 seçenekli (A-E) olmalı, güçlü çeldiricilerle ve ayrıntılı "Çözüm Açıklaması" ile desteklenmelidir.
+"""
+
     prompt = f"""Sen Türkiye Yüzyılı Maarif Modeli (TYMM) standartlarına hakim, ÖSYM tarzında üst düzey bilişsel ölçme değerlendirme soruları hazırlayan uzman bir Tarih soru yazarısın.
 
-Aşağıdaki parametreler doğrultusunda {soru_sayisi} adet nitelikli 11. Sınıf Tarih sorusu oluştur:
+Aşağıdaki parametreler doğrultusunda {"aynı bağlam metnine dayanan EN AZ " + str(baglam_soru_sayisi) + " adet" if baglam_temelli_mi else str(soru_sayisi) + " adet"} nitelikli 11. Sınıf Tarih sorusu oluştur:
 
 ---
 ### 📋 SORU PARAMETRELERİ
@@ -137,7 +149,7 @@ Aşağıdaki parametreler doğrultusunda {soru_sayisi} adet nitelikli 11. Sını
 - **Anahtar Kavramlar:** {kavramlar}
 - **Soru Tipi:** {soru_tipi}
 - **Zorluk / Bilişsel Düzey:** {zorluk}
-- **Üretilecek Soru Sayısı:** {soru_sayisi}
+- **Üretilecek Soru Sayısı:** {baglam_soru_sayisi if baglam_temelli_mi else soru_sayisi}
 {"- **Özel Bağlam / Metin Notu:** " + ek_baglam if ek_baglam else ""}
 ---
 
@@ -149,8 +161,8 @@ Aşağıdaki parametreler doğrultusunda {soru_sayisi} adet nitelikli 11. Sını
 2. **Soru Kökü:**
    - Kazanımda hedeflenen beceriyi (analiz, çıkarım, tarihsel empati, karşılaştırma vb.) doğrudan ölçmelidir.
    - "...yargılardan hangisine ulaşılabilir / ulaşılamaz?" veya "...aşağıdakilerden hangisi gösterilebilir / gösterilemez?" şeklinde net olmalıdır.
-{coktan_secmeli_blok if "Çoktan Seçmeli" in soru_tipi or "ÖSYM" in soru_tipi else ""}{acik_uclu_blok if "Açık Uçlu" in soru_tipi or "Klasik" in soru_tipi else ""}
-5. **Genel Kalite Kriterleri:**
+{coktan_secmeli_blok if "Çoktan Seçmeli" in soru_tipi or "ÖSYM" in soru_tipi else ""}{acik_uclu_blok if "Açık Uçlu" in soru_tipi or "Klasik" in soru_tipi else ""}{baglam_temelli_blok if baglam_temelli_mi else ""}
+6. **Genel Kalite Kriterleri:**
    - Sorular birbirini tekrar etmemeli, her biri farklı bir alt beceriyi veya bakış açısını ölçmelidir.
    - Tarihsel doğruluk esastır; kurgusal ama tarihe sadık bağlam metinleri kullanılabilir.
 
@@ -208,8 +220,11 @@ with st.sidebar:
 
     soru_sayisi = st.number_input(
         "Üretilecek Soru Sayısı:",
-        min_value=1, max_value=10, value=1, step=1
+        min_value=1, max_value=10, value=1, step=1,
+        help="Bağlam Temelli seçiliyse, aynı bağlama dayalı en az 2 soru otomatik olarak istenir."
     )
+    if "Bağlam Temelli" in soru_tipi and soru_sayisi < 2:
+        st.caption("ℹ️ Bağlam temelli sorularda ÖSYM/TYMM mantığı gereği aynı metne dayalı en az 2 soru istenecektir.")
 
     st.divider()
     st.header("🏷️ Odak Kavramlar (İsteğe Bağlı)")
@@ -359,4 +374,3 @@ if st.session_state.gecmis:
             )
             with st.popover(f"Görüntüle #{i+1}"):
                 st.text_area("Prompt", value=kayit["prompt"], height=200, key=f"gecmis_{i}")
-
