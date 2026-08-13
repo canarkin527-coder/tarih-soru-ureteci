@@ -1,8 +1,10 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import json
-import os
 from pathlib import Path
 from datetime import datetime
+
+from mufredat_verisi import MUFREDAT
 
 try:
     import anthropic
@@ -22,12 +24,21 @@ try:
 except ImportError:
     PYPDF_MEVCUT = False
 
-MAKS_KAYNAK_KARAKTER_VARSAYILAN = 150000  # ~35-40 bin token; Claude/Gemini'nin geniş bağlam penceresine göre makul bir varsayılan
-KUTUPHANE_KLASORU = Path(__file__).parent / "kaynak_kutuphane"  # Yüklenen dosyaların kalıcı olarak saklandığı yerel klasör
+# ==========================================
+# SABİTLER VE KLASÖRLER
+# ==========================================
+MAKS_KAYNAK_KARAKTER_VARSAYILAN = 150000
+UYGULAMA_KLASORU = Path(__file__).parent
+KUTUPHANE_KLASORU = UYGULAMA_KLASORU / "kaynak_kutuphane"
+SORU_HAVUZU_KLASORU = UYGULAMA_KLASORU / "soru_havuzu"
 KUTUPHANE_KLASORU.mkdir(exist_ok=True)
+SORU_HAVUZU_KLASORU.mkdir(exist_ok=True)
+SORU_HAVUZU_DOSYA = SORU_HAVUZU_KLASORU / "havuz.json"
+
+ZORLUK_SECENEKLERI = ["Kolay", "Orta", "Zor"]
 
 # ==========================================
-# 0. SAYFA AYARLARI
+# SAYFA AYARLARI
 # ==========================================
 st.set_page_config(
     page_title="TYMM 11. Sınıf Tarih Soru Üreteci",
@@ -37,87 +48,10 @@ st.set_page_config(
 )
 
 # ==========================================
-# 1. MÜFREDAT VERİ YAPISI (TYMM 11. SINIF TARİH)
+# YARDIMCI — KAYNAK KÜTÜPHANESİ
 # ==========================================
-MUFREDAT_11_SINIF = {
-    "1. ÜNİTE: 1683-1789 Arasında Osmanlı Devleti ve Dünya": {
-        "kavramlar": ["Barok", "Devrim", "Hendesehane", "Matbaa", "Rokoko", "Sanayileşme", "Sefaret"],
-        "beceriler": [
-            "SBAB1. Zamanı Algılama ve Kronolojik Düşünme",
-            "SBAB2. Kanıta Dayalı Sorgulama ve Araştırma",
-            "SBAB4. Değişim ve Sürekliliği Algılama"
-        ],
-        "kazanimlar": {
-            "TAR.11.1.1": "Osmanlı Devleti'nin 1683-1789 yılları arasındaki siyasi ve askerî mücadelelerini sonuçları açısından değerlendirebilme (Karşılaştırma ve yargıda bulunma).",
-            "TAR.11.1.2": "Lale Devri'nde Osmanlı devlet ve toplum hayatında meydana gelen değişimi tarihsel bağlamı içerisinde yorumlayabilme (Kaynak inceleme, tablolaştırma, açıklama).",
-            "TAR.11.1.3": "1755 Lizbon ve 1766 İstanbul depremlerini ortaya çıkardığı etkiler bakımından karşılaştırabilme (Benzerlik ve farklılıkları listeleme).",
-            "TAR.11.1.4": "Sanayi Devrimi'nin meydana getirdiği siyasi, sosyal ve ekonomik değişimi neden ve sonuçlarıyla birlikte yorumlayabilme (Olumlu/olumsuz yönleri sorgulama)."
-        }
-    },
-    "2. ÜNİTE: Değişim Çağında Osmanlı Devleti ve Dünya (1789-1908)": {
-        "kavramlar": [
-            "Azınlık", "Cumhuriyetçilik", "İhtilal", "Kapitalizm", "Komünizm",
-            "Liberalizm", "Meşrutiyet", "Milliyetçilik", "Panslavizm", "Sosyalizm"
-        ],
-        "beceriler": [
-            "SBAB4. Değişim ve Sürekliliği Algılama",
-            "SBAB2. Kanıta Dayalı Sorgulama",
-            "SBAB17. Tarihsel Sorun Analizi ve Karar Verme"
-        ],
-        "kazanimlar": {
-            "TAR.11.2.1": "Fransız İhtilali'nin devlet ve toplum hayatında meydana getirdiği değişimi neden ve sonuçlarıyla yorumlayabilme.",
-            "TAR.11.2.2": "1789-1908 yılları arasında meydana gelen siyasi, askerî ve idari gelişmelerin Osmanlı Devleti'nin yönetim ve toplum yapısına etkilerini sorgulayabilme.",
-            "TAR.11.2.3": "1789-1908 yılları arasında Osmanlı Devleti'nde bilim, sanat ve teknoloji alanlarında yapılan uygulamaları yorumlayabilme.",
-            "TAR.11.2.4": "Osmanlı Devleti'nin sanayileşmede geri kalmasına neden olan etmenleri ortadan kaldırmaya yönelik alternatif fikirler üretebilme (Tarihsel Sorun Analizi)."
-        }
-    },
-    "3. ÜNİTE: Savaşlar Sarmalında Osmanlı (1908-1918)": {
-        "kavramlar": ["Bloklaşma", "Darbe", "Fırka", "Göç", "Komita", "Muhacir", "Mütareke", "Müttefik", "Salgın"],
-        "beceriler": [
-            "SBAB3. Tarihsel Empati (Tarihsel Bağlamsallaştırma)",
-            "SBAB2. Kanıta Dayalı Sorgulama ve Araştırma"
-        ],
-        "kazanimlar": {
-            "TAR.11.3.1": "1908-1918 yılları arasında Osmanlı Devleti'nde meydana gelen siyasi ve askerî gelişmelerin sonuçlarını tarihsel bağlamı içerisinde değerlendirebilme.",
-            "TAR.11.3.2": "1908-1918 yılları arasında yaşanan kitlesel göç ve salgınların Osmanlı devlet ve toplum hayatına etkilerine ilişkin bakış açısı geliştirebilme (Tarihsel Empati).",
-            "TAR.11.3.3": "Osmanlı Devleti'nin insanlık tarihine katkılarına ilişkin oluşturduğu özgün ürünleri paylaşabilme."
-        }
-    }
-}
-
-SORU_TIPLERI = [
-    "Bağlam Temelli Çoktan Seçmeli (%40 TYMM)",
-    "ÖSYM Tarzı Klasik / Bilişsel (%60)",
-    "Açık Uçlu Senaryo / Analiz Sorusu",
-    "Eşleştirme Sorusu",
-    "Doğru/Yanlış + Gerekçelendirme"
-]
-
-ZORLUK_SECENEKLERI = ["Kolay", "Orta", "Zor (ÖSYM Üst Seviye)", "Derecelendirilmiş / Şampiyon"]
-
-# ==========================================
-# 2. YARDIMCI FONKSİYONLAR
-# ==========================================
-
-def init_session_state():
-    """Oturum durumunu (geçmiş, favoriler, üretilen soru, kaynak metin) başlatır.
-    Kaynak kütüphanesi diskteki kalıcı klasörden otomatik olarak yüklenir."""
-    if "gecmis" not in st.session_state:
-        st.session_state.gecmis = []
-    if "favoriler" not in st.session_state:
-        st.session_state.favoriler = []
-    if "uretilen_soru" not in st.session_state:
-        st.session_state.uretilen_soru = None
-    if "kutuphane_yuklendi" not in st.session_state:
-        # Uygulama ilk açıldığında diskteki mevcut kütüphaneyi oku
-        metin, adlar = kutuphaneyi_diskten_yukle()
-        st.session_state.kaynak_metin = metin
-        st.session_state.kaynak_dosya_adlari = adlar
-        st.session_state.kutuphane_yuklendi = True
-
 
 def pdf_metin_cikar(dosya_yolu):
-    """Diskteki bir PDF dosyasından metin çıkarır."""
     reader = PdfReader(dosya_yolu)
     parcalar = []
     for sayfa in reader.pages:
@@ -129,7 +63,6 @@ def pdf_metin_cikar(dosya_yolu):
 
 
 def txt_metin_cikar(dosya_yolu):
-    """Diskteki bir .txt dosyasından metin çıkarır (birden çok kodlamayı dener)."""
     ham = Path(dosya_yolu).read_bytes()
     for kodlama in ("utf-8", "windows-1254", "iso-8859-9", "latin-1"):
         try:
@@ -141,8 +74,6 @@ def txt_metin_cikar(dosya_yolu):
 
 @st.cache_data(show_spinner=False)
 def dosyadan_metin_cikar(dosya_yolu_str, degisiklik_zamani):
-    """Diskteki bir dosyadan metin çıkarır. `degisiklik_zamani` önbelleği geçersiz kılmak için kullanılır
-    (dosya değişirse Streamlit önbelleği otomatik yeniler)."""
     dosya_yolu = Path(dosya_yolu_str)
     if dosya_yolu.suffix.lower() == ".pdf":
         if not PYPDF_MEVCUT:
@@ -152,7 +83,6 @@ def dosyadan_metin_cikar(dosya_yolu_str, degisiklik_zamani):
 
 
 def dosyayi_kutuphaneye_kaydet(yuklenen_dosya):
-    """Streamlit'ten gelen yüklenen dosyayı kalıcı kütüphane klasörüne yazar, çakışan adları numaralandırır."""
     hedef = KUTUPHANE_KLASORU / yuklenen_dosya.name
     sayac = 1
     while hedef.exists():
@@ -163,16 +93,14 @@ def dosyayi_kutuphaneye_kaydet(yuklenen_dosya):
 
 
 def kutuphaneyi_diskten_yukle():
-    """Kütüphane klasöründeki tüm dosyaları okuyup birleşik kaynak metnini ve dosya adlarını döndürür."""
-    tum_metin = []
-    dosya_adlari = []
+    tum_metin, dosya_adlari = [], []
     for dosya_yolu in sorted(KUTUPHANE_KLASORU.glob("*")):
         if dosya_yolu.suffix.lower() not in (".pdf", ".txt"):
             continue
         try:
             metin = dosyadan_metin_cikar(str(dosya_yolu), dosya_yolu.stat().st_mtime)
         except Exception as e:
-            st.error(f"'{dosya_yolu.name}' okunurken hata oluştu: {e}")
+            st.error(f"'{dosya_yolu.name}' okunurken hata: {e}")
             continue
         if metin:
             tum_metin.append(f"### Kaynak: {dosya_yolu.name}\n{metin}")
@@ -183,353 +111,323 @@ def kutuphaneyi_diskten_yukle():
 
 
 def yuklenen_dosyalari_isle(dosyalar):
-    """Yeni yüklenen dosyaları diske kalıcı olarak kaydeder."""
     for dosya in dosyalar:
         try:
             dosyayi_kutuphaneye_kaydet(dosya)
         except Exception as e:
-            st.error(f"'{dosya.name}' diske kaydedilirken hata oluştu: {e}")
+            st.error(f"'{dosya.name}' diske kaydedilirken hata: {e}")
 
+
+# ==========================================
+# YARDIMCI — SORU HAVUZU
+# ==========================================
+
+def havuzu_yukle():
+    if SORU_HAVUZU_DOSYA.exists():
+        try:
+            return json.loads(SORU_HAVUZU_DOSYA.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def havuza_kaydet(kayit):
+    havuz = havuzu_yukle()
+    havuz.insert(0, kayit)
+    SORU_HAVUZU_DOSYA.write_text(json.dumps(havuz, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def havuzdan_sil(kayit_id):
+    havuz = [k for k in havuzu_yukle() if k.get("id") != kayit_id]
+    SORU_HAVUZU_DOSYA.write_text(json.dumps(havuz, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ==========================================
+# YARDIMCI — AI ÇAĞRILARI
+# ==========================================
 
 def soru_uret_api(api_key, model, prompt):
-    """Anthropic API'sini çağırarak promptu doğrudan bir soruya dönüştürür.
-    Yanıt token sınırına takılıp yarım kaldıysa bunu tespit edip kullanıcıyı uyarır."""
     client = anthropic.Anthropic(api_key=api_key)
     response = client.messages.create(
-        model=model,
-        max_tokens=16000,
+        model=model, max_tokens=16000,
         messages=[{"role": "user", "content": prompt}]
     )
-    parcalar = [blok.text for blok in response.content if blok.type == "text"]
-    metin = "\n".join(parcalar)
+    metin = "\n".join(b.text for b in response.content if b.type == "text")
     if response.stop_reason == "max_tokens":
-        metin += (
-            "\n\n---\n⚠️ **UYARI:** Yanıt, model çıktı sınırına (token limiti) takıldığı için yarım kalmış olabilir. "
-            "Soru sayısını azaltıp tekrar denemenizi veya soruları iki ayrı istek hâlinde ürettirmenizi öneririz."
-        )
+        metin += "\n\n---\n⚠️ **UYARI:** Yanıt token sınırına takılıp yarım kalmış olabilir. Soru sayısını azaltıp tekrar deneyin."
     return metin
 
 
 def soru_uret_gemini(api_key, model, prompt):
-    """Google Gemini API'sini çağırarak promptu doğrudan bir soruya dönüştürür.
-    Yanıt token sınırına takılıp yarım kaldıysa bunu tespit edip kullanıcıyı uyarır."""
     genai.configure(api_key=api_key)
     model_obj = genai.GenerativeModel(model)
     response = model_obj.generate_content(
-        prompt,
-        generation_config=genai.types.GenerationConfig(max_output_tokens=16000)
+        prompt, generation_config=genai.types.GenerationConfig(max_output_tokens=16000)
     )
     metin = response.text
     try:
-        if response.candidates[0].finish_reason == 2:  # MAX_TOKENS
-            metin += (
-                "\n\n---\n⚠️ **UYARI:** Yanıt, model çıktı sınırına (token limiti) takıldığı için yarım kalmış olabilir. "
-                "Soru sayısını azaltıp tekrar denemenizi veya soruları iki ayrı istek hâlinde ürettirmenizi öneririz."
-            )
+        if response.candidates[0].finish_reason == 2:
+            metin += "\n\n---\n⚠️ **UYARI:** Yanıt token sınırına takılıp yarım kalmış olabilir. Soru sayısını azaltıp tekrar deneyin."
     except (IndexError, AttributeError):
         pass
     return metin
 
 
-def build_prompt(unite_adi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
-                  odak_kavramlar, ek_baglam, soru_sayisi, kaynak_metin=""):
-    """Seçilen parametrelere göre LLM'e gönderilecek promptu oluşturur."""
-    tum_kavramlar = MUFREDAT_11_SINIF[unite_adi]["kavramlar"]
-    beceriler = ", ".join(MUFREDAT_11_SINIF[unite_adi]["beceriler"])
+# ==========================================
+# PROMPT OLUŞTURUCU
+# ==========================================
 
-    # Kullanıcı belirli kavramlar seçtiyse onları, seçmediyse tüm kavramları kullan
-    kavramlar = ", ".join(odak_kavramlar) if odak_kavramlar else ", ".join(tum_kavramlar)
+def build_prompt(unite, cikti_kod, cikti_tam, surec_metinleri, soru_kategorisi,
+                 zorluk, soru_sayisi, kaynak_metin="", ek_baglam=""):
+    baglam_temelli = (soru_kategorisi == "Bağlam Temelli")
+    surec_listesi = "\n".join(f"   - {s}" for s in surec_metinleri)
 
     uslup_blok = """
-0. **Yazım Üslubu (ZORUNLU):**
-   - Metinler bir yapay zekâ tarafından değil, alanında deneyimli bir tarih öğretmeni/soru yazarı tarafından kaleme alınmış gibi doğal, akıcı ve özgün bir Türkçeyle yazılmalıdır.
-   - Yapay zekâ metinlerine özgü basmakalıp açılışlardan ("Günümüzde...", "Tarih boyunca...", "Bilindiği gibi...", "Şüphesiz ki..." gibi klişe girişlerden), aşırı sıfat yığmaktan ve yapay/şablon cümle kalıplarından kaçınılmalıdır.
-   - Her bağlam metni kendine özgü, önceki metinlerin kalıbını tekrar etmeyen bir anlatım ve kurguyla yazılmalıdır; seri üretim hissi vermemelidir.
+0. **Yazım Üslubu (ZORUNLU):** Metinler deneyimli bir tarih öğretmeni tarafından kaleme alınmış gibi doğal, akıcı ve özgün bir Türkçeyle yazılmalı; yapay zekâ klişelerinden ("Günümüzde...", "Tarih boyunca...", "Bilindiği gibi...") ve şablon cümlelerden kaçınılmalıdır. Her bağlam metni kendine özgü olmalı, seri üretim hissi vermemelidir.
 """
 
     dogruluk_blok = """
-0b. **Tarihsel Doğruluk ve Halüsinasyon Önleme (ZORUNLU):**
-   - Kaynak materyal (aşağıda "YÜKLENEN KAYNAK MATERYAL(LER)" varsa) yüklenmişse, bağlam metinlerindeki TÜM somut bilgi (tarih, kişi, olay, sayısal veri) o kaynağa dayanmalıdır; kaynakta yer almayan uydurma bir tarih/isim/olay eklenmemelidir.
-   - Kaynak materyal yüklenmemişse iki yol izlenebilir: (a) genel olarak bilinen, tarihçilerce doğrulanmış gerçek olay/kişi/tarihleri kullan, ya da (b) tamamen kurgusal bir öncül kullanacaksan bunu gerçek bir tarihî kişiye ait olduğu izlenimi verecek şekilde SUNMA (ör. gerçek bir tarihî kişiye ait olmayan bir sözü ona atfetme, var olmayan bir arşiv belgesine gerçek bir kod/tarih numarası uydurma). Kurgusal bir karakter kullanıyorsan bunu jenerik bir isimle (ör. "dönemin bir sefaret kâtibi", "bölgeden geçen bir seyyah") yap; gerçek, doğrulanabilir bir tarihî şahsiyet gibi sunma.
-   - Emin olmadığın spesifik bir rakam, tarih ya da alıntı varsa, onu icat etmek yerine daha genel ama doğru bir ifadeyle (ör. "yüzyılın ortalarında", "kayda değer bir artışla") yaz.
-   - Sorunun doğru cevabı ve çözüm açıklaması, gerçek tarihsel bilgiyle çelişmemelidir; kurgusal bağlam kullanılsa bile çıkarımlar tarihsel mantığa ve bilinen genel çerçeveye sadık kalmalıdır.
+0b. **Tarihsel Doğruluk (ZORUNLU):** Kaynak materyal yüklenmişse tüm somut bilgiler (tarih, kişi, olay) o kaynağa dayanmalıdır. Kaynak yoksa ya genel bilinen doğrulanmış olguları kullan ya da kurgusal karakterleri jenerik isimlerle ("dönemin bir sefaret kâtibi", "bölgeden geçen bir seyyah") ver; gerçek tarihî şahsiyetlere uydurma söz/rakam atfetme. Emin olmadığın tarih/rakam/alıntıyı icat etme, genel ama doğru bir ifade kullan.
 """
 
-    coktan_secmeli_blok = """
-3. **Seçenekler ve Çözüm (Çoktan Seçmeli ise):**
-   - A, B, C, D, E olmak üzere 5 seçenek içermelidir.
-   - **Seçenek Uzunluğu (ZORUNLU):** Tüm seçenekler kelime sayısı, satır uzunluğu, dil yapısı ve karmaşıklık bakımından birbirine YAKIN ve DENGELİ olmalıdır. Doğru seçenek diğerlerinden daha uzun, daha detaylı veya daha açıklayıcı yazılarak öğrenciye görsel bir ipucu verilmemelidir.
-   - "Hepsi", "Hiçbiri", "A ve B" gibi öğrencinin muhakeme yapmadan eleyebileceği/seçebileceği kapsayıcı seçenekler KESİNLİKLE kullanılmamalıdır. Her seçenek bağımsız bir yargı veya bilgi içermelidir.
-   - Seçeneklerde bağlam metnindeki bir cümle veya kelime öbeği birebir/aynen tekrar edilmemeli; metindeki fikir farklı kelimelerle (anlamca özdeş ama biçimce farklı) ifade edilmelidir. Aksi hâlde öğrenci anlamadan görsel eşleştirmeyle doğru cevabı bulabilir.
-   - Çeldiriciler rastgele veya "sadece seçenek sayısını tamamlamak için yazılmış bariz yanlış" ifadeler OLMAMALI; konuyu eksik öğrenen veya yanlış yapılandıran bir öğrencinin gerçekten düşebileceği kavram yanılgılarından veya hatalı akıl yürütmelerden seçilmelidir.
-   - Doğru cevap açıkça belirtilmeli ve her seçenek için (doğru dâhil) kısa gerekçelerin yer aldığı detaylı pedagojik bir "Çözüm Açıklaması" eklenmelidir.
+    secenek_blok = """
+- **Seçenekler (ZORUNLU):** A, B, C, D, E olmak üzere 5 seçenek. Tüm seçenekler kelime sayısı, uzunluk ve dil yapısı bakımından birbirine YAKIN ve DENGELİ olmalı; doğru seçenek daha uzun/detaylı yazılıp görsel ipucu verilmemelidir. "Hepsi", "Hiçbiri", "A ve B" gibi kapsayıcı seçenekler KESİNLİKLE kullanılmamalı. Bağlam metnindeki cümleler seçeneklerde birebir tekrarlanmamalı (anlamca özdeş ama farklı kelimelerle). Çeldiriciler rastgele/bariz yanlış değil, konuyu eksik öğrenen öğrencinin düşeceği kavram yanılgılarından seçilmeli.
+- Doğru cevap açıkça belirtilmeli ve kısa gerekçeli bir "Çözüm Açıklaması" eklenmelidir.
 """
 
-    acik_uclu_blok = """
-4. **Klasik / Açık Uçlu ise:**
-   - Öğrencinin üst düzey düşünme becerisini ortaya koyacak yönlendirici soru maddeleri olmalı.
-   - Detaylı ve puanlama kriterlerini içeren bir "Dereceli Puanlama Anahtarı (Rubrik)" eklenmelidir.
+    if baglam_temelli:
+        kurgu_blok = f"""
+### 🎯 BAĞLAM TEMELLİ SORU KURGUSU (TYMM Kılavuzu — ZORUNLU 5 ADIMLI SÜREÇ):
+
+**ADIM 1 — Hedef:** Ölçülecek çıktı ve süreç bileşenleri yukarıda verilmiştir. Her soru bu süreç bileşenlerinden birini hedeflemelidir.
+
+**ADIM 2 — Bağlamın Kurgulanması:**
+- Bağlam metni TAM OLARAK İKİ (2) PARAGRAFTAN oluşmalıdır. İlk paragraf durumu/olayı/belgeyi tanıtır, ikinci paragraf ayrıntı/gelişme/farklı bakış açısı sunarak derinleştirir.
+- Bir tarihçinin karşılaşacağı türden birincil/ikincil kaynak niteliğinde materyal (hatırat, dönemin gazetesi, arşiv belgesi, seyahatname, tarihçi değerlendirmesi, mektup vb.) kullanılmalı. Bağlam dekor olmamalı, gerçek bir çıkarım görevi sunmalı.
+- Dar sosyoekonomik referanslardan kaçın; 11. sınıf düzeyine uygun, sade ve erişilebilir bir dil kullan.
+
+**ADIM 3 — Sorular:**
+- Bu TEK bağlam metnine dayanan TAM OLARAK {soru_sayisi} soru üretilmelidir; bu sayının altında kalınmamalıdır.
+- Her soru farklı bir süreç bileşenini/bilişsel boyutu ölçmeli (bilgi/çıkarım, neden-sonuç, karşılaştırma, yargı, genelleme). Sorular birbirinin tekrarı olmamalı.
+- **İpucu Zinciri Yasağı:** Sorular arasında bağımlılık kurulmamalı; "bir önceki soruda bulduğunuz sonuca göre" tarzı ifadeler KULLANILMAMALI. Her soru bağlama bağımsız atıfta bulunmalı ("Bu parçaya göre...").
+- Soru kökü: çift olumsuzluk ve "Sizce" gibi öznel ifadeler kullanılmamalı; "Metne göre" gibi nesnel ifadeler tercih edilmeli. Soru kökünde konu tekrar anlatılmamalı.
+- Bağlam metni yalnızca bir kez en başta verilmeli; sorular altında 1., 2., 3. şeklinde sıralanmalı.
+{secenek_blok}
+**ADIM 4 — Güçlü Çeldiriciler:** Yanlış seçenekler metinle ilişkili ama ustaca yanıltıcı olmalı (kısmen doğru-eksik bilgi, ilgisiz ayrıntı, bağlam dışı doğru bilgi, mantık hatası).
+
+**ADIM 5 — İşlevsellik Testi (ZORUNLU ÖZ-DENETİM):** Her soru için "öğrenci metni okumadan, sadece ön bilgisiyle veya seçenekleri eleyerek cevaplayabilir mi?" diye sor. Cevap "evet" ise soruyu, cevabın mutlaka metne dayanacağı şekilde yeniden kurgula.
 """
-
-    baglam_temelli_mi = "Bağlam Temelli" in soru_tipi
-    baglam_soru_sayisi = max(soru_sayisi, 5) if baglam_temelli_mi else soru_sayisi
-
-    baglam_temelli_blok = f"""
-5. **Bağlam Temelli Soru Kurgusu (TYMM Bağlam Temelli Soru Yazım Kılavuzu — ZORUNLU SÜREÇ):**
-
-   Aşağıdaki 5 adımlı süreci sırasıyla, atlamadan uygula:
-
-   **ADIM 1 — Hedefin Netleştirilmesi:** Ölçülecek öğrenme çıktısı ve bu çıktıya ait süreç bileşenlerini (alt becerileri) net biçimde ayrıştır. Her soru, bu süreç bileşenlerinden birini hedeflemelidir.
-
-   **ADIM 2 — Bağlamın Kurgulanması:**
-   - Bağlam metni tam olarak İKİ (2) PARAGRAFTAN oluşmalıdır — ne tek paragraf ne de üçten fazla. İlk paragraf durumu/olayı/belgeyi tanıtmalı, ikinci paragraf ayrıntı, gelişme veya farklı bir bakış açısı/veri sunarak metni derinleştirmelidir.
-   - Tarih dersi için özgün, günlük-hayat karşılığı: bir tarihçinin/araştırmacının karşılaşacağı türden "birincil veya ikincil kaynak" niteliğinde bir materyal (bir hatırat kesiti, dönemin gazete haberi, arşiv belgesi, seyahatname parçası, müze objesi tasviri, tarihçi değerlendirmesi, edebî metin/mektup vb.) kullanılmalıdır. Bağlam yalnızca bir "dekor" olmamalı, öğrenciye gerçek bir tarihçinin yapacağı türden karmaşık ve yapılandırılmamış bir çıkarım görevi sunmalıdır.
-   - Belirli bir sosyoekonomik çevreye özgü, dar ve yabancılaştırıcı referanslardan kaçınılmalı; öğrencinin kolayca kendini içine yerleştirebileceği, erişilebilir ve özgün (authentic) bir kurgu tercih edilmelidir.
-   - Metindeki dil yapısı, söz varlığı ve cümle uzunluğu 11. sınıf öğrencisinin bilişsel düzeyine uygun olmalı; gereksiz süslü/karmaşık cümlelerden, dekoratif ayrıntılardan kaçınılarak bilişsel yük en aza indirilmelidir.
-
-   **ADIM 3 — Süreç Bileşenlerini Ölçen Soruların Hazırlanması:**
-   - Bu TEK bağlam metnine dayanan TAM OLARAK {baglam_soru_sayisi} farklı soru üretilmelidir; bu sayının altında kalınmamalı, gerekirse bu kadar soruyu kaldıracak zenginlikte kurgulanmalıdır.
-   - Sorular öğrenme çıktısının farklı süreç bileşenlerini/bilişsel boyutlarını ölçmelidir (ör. doğrudan bilgi/çıkarım, neden-sonuç ilişkisi, karşılaştırma, yargıya ulaşma/ulaşamama, genelleme). Birbirinin aynısı veya yakın varyasyonu olan sorular üretilmemelidir.
-   - **İpucu Zinciri Yasağı (ZORUNLU):** Sorular arasında bağımlılık kurulmamalıdır. Bir sorunun cevabı diğer sorunun ön koşulu olmamalı; "Bir önceki soruda bulduğunuz sonuca göre..." tarzı ifadeler KESİNLİKLE kullanılmamalıdır. Bunun yerine her soru "Bu parçaya göre...", "Metinde anlatılanlara göre..." gibi ortak bağlama bağımsız şekilde atıfta bulunmalı; ilk soruyu cevaplayamayan bir öğrenci de metne dönüp ikinci soruyu rahatça cevaplayabilmelidir.
-   - Soru kökü kuralları: (a) Çift olumsuzluk içeren ifadeler ("...olmadığı söylenemez?" gibi) kullanılmamalı; olumsuzluk gerekiyorsa tek ve net olmalı, kelime koyu/altı çizili vurgulanmalıdır. (b) "Sizce", "Size göre" gibi öznel ifadeler kullanılmamalı; "Metne göre", "Bu parçadan hareketle" gibi metne dayalı nesnel ifadeler tercih edilmelidir. (c) Soru kökünde konu tekrar anlatılmamalı/genişletilmemeli; bilgi bağlamda kalmalı, soru kökü yalnızca öğrenciyi cevaba yönlendirmelidir.
-   - Bağlam metni yalnızca bir kez, sorular grubunun en başında verilmeli; her soru öncesinde tekrarlanmamalı, sorular metnin altında "1.", "2.", "3." ... şeklinde sıralanmalıdır.
-
-   **ADIM 4 — Güçlü Çeldiricilerin Yapılandırılması:** Her sorunun 5 seçeneğindeki (A-E) yanlış seçenekler; metinle ilişkili ama ustaca yanıltıcı olmalıdır — kısmen doğru ama eksik bilgi, metinde geçen ama soruyla ilgisiz bir ayrıntı, tarihsel olarak doğru ama bu bağlamda geçersiz bir bilgi ya da mantık hatası içeren makul görünümlü ifadeler gibi teknikler kullanılmalıdır. Bkz. madde 3'teki seçenek uzunluğu ve biçim kuralları (eşit uzunluk, "Hepsi/Hiçbiri" yasağı, metinden birebir alıntı yasağı) bağlam temelli sorularda da aynı sıkılıkla geçerlidir.
-
-   **ADIM 5 — Bağlamın İşlevselliğinin Test Edilmesi (ZORUNLU ÖZ-DENETİM):** Her soruyu yazdıktan sonra şu soruyu kendine sor: "Öğrenci bu metni hiç okumadan, sadece ön bilgisiyle veya seçenekleri eleyerek bu soruyu cevaplayabilir mi?" Cevap "evet" ise o soru İŞLEVSİZ demektir; bağlamı ve/veya soruyu, cevabın mutlaka metindeki bilgiye/çıkarıma dayanacağı şekilde yeniden kurgula. Nihai çıktıya bu öz-denetimden geçtiğini gösteren bir "Bağlam İşlevsellik Notu" eklemene gerek yok; sadece bu testi geçen sorular üret.
+    else:
+        kurgu_blok = f"""
+### 🎯 NORMAL (KLASİK ÖSYM TARZI) SORU KURGUSU:
+- TAM OLARAK {soru_sayisi} bağımsız soru üretilmelidir; her soru kendi kısa öncülüne/soru köküne sahip olabilir.
+- Sorular yukarıdaki süreç bileşenlerini ölçmeli, kazanımın hedeflediği bilişsel beceriyi (analiz, çıkarım, karşılaştırma) doğrudan sınamalıdır.
+- Uzun bağlam metni zorunlu değildir; ÖSYM tarzı doğrudan, net ve öz sorular hazırlanabilir. Yine de sorular ezber değil kavrayış ölçmelidir.
+{secenek_blok}
+- Çeldiriciler güçlü olmalı, konuyu eksik bilen öğrencinin düşeceği yanılgılardan seçilmelidir.
 """
 
     kaynak_blok = ""
     if kaynak_metin:
         kaynak_blok = f"""
-7. **Yüklenen Kaynak Materyal Kullanımı (ZORUNLU ÖNCELİK):**
-   - Aşağıda öğretmenin yüklediği kitap/döküman parçaları yer almaktadır. Bağlam metinlerini ve soruları KURGUSAL olarak değil, ÖNCELİKLE bu kaynaklardaki bilgi, olay, kişi, tarih ve alıntılara dayanarak oluştur.
-   - Kaynaklarda birden fazla dosya varsa, kazanıma ve üniteye en uygun olan bölüm(ler)i seç; konuyla ilgisiz kısımları kullanma.
-   - Kaynaktan doğrudan uzun alıntı kopyalamak yerine, kaynaktaki bilgiyi kendi tarihsel bağlam metnini yazarken zemin olarak kullan; gerekirse kısa (en fazla 1-2 cümlelik) doğrudan alıntılara yer verebilirsin.
-   - Kaynakta kazanımla ilgili yeterli bilgi yoksa, bunu belirt ve genel tarihî bilgini kullanarak devam et.
+### 📚 YÜKLENEN KAYNAK MATERYAL (ZORUNLU ÖNCELİK):
+Bağlam ve soruları ÖNCELİKLE aşağıdaki kaynaklardaki bilgi, olay, kişi ve tarihlere dayanarak oluştur. Kaynakta kazanımla ilgili yeterli bilgi yoksa bunu belirtip genel tarihî bilgini kullan.
 
----
-### 📚 YÜKLENEN KAYNAK MATERYAL(LER)
 {kaynak_metin}
 ---
 """
 
-    prompt = f"""Sen Türkiye Yüzyılı Maarif Modeli (TYMM) Bağlam Temelli Çoktan Seçmeli Soru Yazım Kılavuzu'na ve ÖSYM ölçme-değerlendirme standartlarına hakim, üst düzey bilişsel soru hazırlayan, alanında yılların verdiği tecrübeye sahip bir Tarih öğretmeni/soru yazarısın.
+    prompt = f"""Sen Türkiye Yüzyılı Maarif Modeli (TYMM) Bağlam Temelli Soru Yazım Kılavuzu'na ve ÖSYM standartlarına hakim, deneyimli bir Tarih öğretmeni/soru yazarısın.
 
-Aşağıdaki parametreler doğrultusunda TAM OLARAK {baglam_soru_sayisi if baglam_temelli_mi else soru_sayisi} adet nitelikli 11. Sınıf Tarih sorusu oluştur. Bu sayı bir üst sınır değil, kesin bir hedeftir; daha az soru üretip bırakmak KABUL EDİLEMEZ.
+Aşağıda TAM OLARAK belirtilen ünite, öğrenme çıktısı ve süreç bileşenleri için {soru_sayisi} adet {soru_kategorisi.lower()} soru üret. Bu parametrelerin DIŞINA çıkma; yalnızca verilen süreç bileşenlerini ölç.
 
 ---
 ### 📋 SORU PARAMETRELERİ
 - **Ders:** Tarih (11. Sınıf)
-- **Ünite / Tema:** {unite_adi}
-- **Öğrenme Çıktısı (Kazanım):** {kazanim_kodu} - {kazanim_tanimi}
-- **İlgili Alan Becerileri:** {beceriler}
-- **Anahtar Kavramlar:** {kavramlar}
-- **Soru Tipi:** {soru_tipi}
-- **Zorluk / Bilişsel Düzey:** {zorluk}
-- **Üretilecek Soru Sayısı (KESİN):** {baglam_soru_sayisi if baglam_temelli_mi else soru_sayisi}
-{"- **Özel Bağlam / Metin Notu:** " + ek_baglam if ek_baglam else ""}
+- **Ünite:** {unite}
+- **Öğrenme Çıktısı:** {cikti_tam}
+- **Ölçülecek Süreç Bileşen(ler)i (alt başlıklar):**
+{surec_listesi}
+- **Soru Kategorisi:** {soru_kategorisi}
+- **Zorluk Düzeyi:** {zorluk}
+- **Üretilecek Soru Sayısı (KESİN):** {soru_sayisi}
+{"- **Özel Bağlam Notu:** " + ek_baglam if ek_baglam else ""}
 ---
 {kaynak_blok}
-### ✍️ SORU YAZIM KURALLARI VE BİÇİMLENDİRME:
-{uslup_blok}
-{dogruluk_blok}
-1. **Bağlam Metni (Öncül):**
-   - Sorunun başında mutlaka tarihsel bir bağlam (birinci elden arşiv belgesi, seyahatname alıntısı, tarihçi görüşü, karşılaştırma tablosu veya tarihsel olay özeti) yer almalıdır.
-   - Metin özgün, tarihsel gerçekliklere sadık ve edebi dili güçlü olmalıdır.
-   - Bağlam yalnızca bir dekor olmamalı, sorulan sorunun cevabı mutlaka bu metnin okunup anlaşılmasına bağlı olmalıdır (bkz. Adım 5 — İşlevsellik Testi).
+### ✍️ YAZIM KURALLARI:
+{uslup_blok}{dogruluk_blok}{kurgu_blok}
+### ⏱️ ÇIKTI YÖNETİMİ:
+İstenen soru sayısını tamamlamak, açıklamaları uzatmaktan HER ZAMAN önceliklidir. Yer daralırsa açıklamaları kısalt ama SAYIYI TAMAMLA; asla son soruyu yarım bırakma.
 
-2. **Soru Kökü:**
-   - Kazanımda hedeflenen beceriyi (analiz, çıkarım, tarihsel empati, karşılaştırma vb.) doğrudan ölçmelidir.
-   - "...yargılardan hangisine ulaşılabilir / ulaşılamaz?" veya "...aşağıdakilerden hangisi gösterilebilir / gösterilemez?" şeklinde net olmalıdır.
-   - Çift olumsuzluk ve öznel ifadelerden kaçınılmalı (bkz. Adım 3).
-{coktan_secmeli_blok if "Çoktan Seçmeli" in soru_tipi or "ÖSYM" in soru_tipi else ""}{acik_uclu_blok if "Açık Uçlu" in soru_tipi or "Klasik" in soru_tipi else ""}{baglam_temelli_blok if baglam_temelli_mi else ""}
-6. **Genel Kalite Kriterleri:**
-   - Sorular birbirini tekrar etmemeli, her biri farklı bir alt beceriyi veya bakış açısını ölçmelidir.
-   - Tarihsel doğruluk esastır; kurgusal ama tarihe sadık bağlam metinleri kullanılabilir (kaynak materyal yüklenmişse yukarıdaki zorunlu kurala uy).
-   - Metin insan bir eğitimci tarafından yazılmış doğallıkta olmalı; yapay zekâ üslubu, klişe kalıplar ve tekdüze cümle yapıları kullanılmamalıdır (bkz. madde 0).
-
-### ⏱️ ÇIKTI UZUNLUĞU YÖNETİMİ (ZORUNLU):
-İstenen soru sayısını tamamlamak, açıklamaları uzatmaktan HER ZAMAN daha önceliklidir. Eğer yer/uzunluk kısıtı hissedersen:
-1. Önce çözüm açıklamalarını kısalt (her seçenek için 1-2 cümle yeterlidir, uzun paragraflara gerek yok).
-2. Bağlam metnini gereksiz yere uzatma; 2 paragraf kuralına sadık kal, fazladan süsleme ekleme.
-3. Asla son soruyu yarım bırakma veya istenen sayıdan daha azını üretip bitirme; gerekirse tüm sorular için açıklamaları daha da sadeleştir ama SAYIYI TAMAMLA.
-
-Lütfen çıktıyı şık ve okunaklı bir Markdown formatında, her soruyu numaralandırarak sun.
+Çıktıyı okunaklı bir Markdown formatında, her soruyu numaralandırarak sun.
 """
     return prompt
 
 
-def gecmise_ekle(unite_adi, kazanim_kodu, soru_tipi, zorluk, prompt):
-    """Üretilen promptu oturum geçmişine kaydeder (en fazla 20 kayıt)."""
-    kayit = {
-        "zaman": datetime.now().strftime("%H:%M:%S"),
-        "unite": unite_adi,
-        "kazanim": kazanim_kodu,
-        "soru_tipi": soru_tipi,
-        "zorluk": zorluk,
-        "prompt": prompt,
-    }
-    st.session_state.gecmis.insert(0, kayit)
-    st.session_state.gecmis = st.session_state.gecmis[:20]
+# ==========================================
+# OTURUM DURUMU
+# ==========================================
+if "uretilen_soru" not in st.session_state:
+    st.session_state.uretilen_soru = None
+if "son_uretim_meta" not in st.session_state:
+    st.session_state.son_uretim_meta = None
+if "kutuphane_yuklendi" not in st.session_state:
+    metin, adlar = kutuphaneyi_diskten_yukle()
+    st.session_state.kaynak_metin = metin
+    st.session_state.kaynak_dosya_adlari = adlar
+    st.session_state.kutuphane_yuklendi = True
 
 
 # ==========================================
-# 3. ANA UYGULAMA
+# BAŞLIK
 # ==========================================
-init_session_state()
-
 st.title("🏛️ TYMM 11. Sınıf Tarih Soru Üreteci")
-st.markdown("**Türkiye Yüzyılı Maarif Modeli** ve **ÖSYM** standartlarında bağlam temelli soru ve materyal hazırlama aracı.")
+st.markdown("**Türkiye Yüzyılı Maarif Modeli** müfredatına birebir bağlı, kademeli seçimli soru üretimi ve soru havuzu.")
 st.divider()
 
-# ---- Sidebar: Parametre Seçimleri ----
+# ==========================================
+# SIDEBAR — KADEMELİ SEÇİM
+# ==========================================
 with st.sidebar:
-    st.header("⚙️ Müfredat Seçimleri")
+    st.header("⚙️ Müfredat Seçimi")
+    st.caption("Sırasıyla ünite → öğrenme çıktısı → süreç bileşeni (alt başlık) seçin.")
 
-    unite_secimi = st.selectbox(
-        "1. Ünite / Tema Seçiniz:",
-        options=list(MUFREDAT_11_SINIF.keys())
-    )
+    unite_secimi = st.selectbox("1️⃣ Ünite:", options=list(MUFREDAT.keys()))
 
-    kazanimlar_dict = MUFREDAT_11_SINIF[unite_secimi]["kazanimlar"]
-    kazanim_kodu = st.selectbox(
-        "2. Öğrenme Çıktısı (Kazanım):",
-        options=list(kazanimlar_dict.keys()),
-        format_func=lambda x: f"{x} - {kazanimlar_dict[x][:45]}..."
+    ciktilar = MUFREDAT[unite_secimi]
+    cikti_kod = st.selectbox(
+        "2️⃣ Öğrenme Çıktısı:",
+        options=list(ciktilar.keys()),
+        format_func=lambda k: f"{k} — {ciktilar[k]['tam'].split('.', 3)[-1].strip()[:38]}..."
     )
-    kazanim_tanimi = kazanimlar_dict[kazanim_kodu]
+    cikti_tam = ciktilar[cikti_kod]["tam"]
+
+    surecler_dict = ciktilar[cikti_kod]["surecler"]
+    surec_secimi = st.multiselect(
+        "3️⃣ Süreç Bileşen(ler)i (alt başlık):",
+        options=list(surecler_dict.keys()),
+        default=list(surecler_dict.keys())[:1],
+        format_func=lambda s: s[:60] + ("..." if len(s) > 60 else "")
+    )
 
     st.divider()
     st.header("🎯 Soru Formatı")
 
-    soru_tipi = st.radio("Soru Tipi:", SORU_TIPLERI)
+    soru_kategorisi = st.radio("Soru Kategorisi:", ["Bağlam Temelli", "Normal"], horizontal=True)
+    zorluk = st.radio("Zorluk Düzeyi:", ZORLUK_SECENEKLERI, horizontal=True)
 
-    zorluk = st.select_slider("Zorluk Derecesi:", options=ZORLUK_SECENEKLERI)
+    onerilen = 0
+    anahtar = "bt" if soru_kategorisi == "Bağlam Temelli" else "normal"
+    for s in surec_secimi:
+        onerilen += surecler_dict[s][anahtar].get(zorluk, 0)
 
+    if onerilen > 0:
+        st.info(f"📊 Müfredat tablosuna göre önerilen soru sayısı: **{onerilen}**")
+
+    varsayilan_sayi = max(onerilen, 1) if soru_kategorisi == "Normal" else max(onerilen, 5)
     soru_sayisi = st.number_input(
         "Üretilecek Soru Sayısı:",
-        min_value=1, max_value=20, value=1, step=1,
-        help="Bağlam Temelli seçiliyse, aynı bağlama dayalı en az 5 soru otomatik olarak istenir."
+        min_value=1, max_value=30, value=int(varsayilan_sayi), step=1,
+        help="Varsayılan değer müfredat tablosundaki öneriden gelir; değiştirebilirsiniz."
     )
-    if "Bağlam Temelli" in soru_tipi and soru_sayisi < 5:
-        st.caption("ℹ️ Bağlam temelli sorularda ÖSYM/TYMM mantığı gereği aynı metne dayalı en az 5 soru istenecektir.")
+    if soru_kategorisi == "Bağlam Temelli" and soru_sayisi < 5:
+        st.caption("ℹ️ Bağlam temelli sorularda aynı metne dayalı en az 5 soru önerilir.")
     if soru_sayisi > 10:
-        st.caption("⚠️ 10'un üzerindeki sayılarda model çıktı (token) sınırına takılıp yarım kalabilir. Önerimiz: büyük setleri 8-10'luk gruplar hâlinde ayrı ayrı ürettirmeniz.")
+        st.caption("⚠️ 10+ soruda model token sınırına takılabilir; büyük setleri gruplar hâlinde ürettirin.")
 
     st.divider()
-    st.header("🏷️ Odak Kavramlar (İsteğe Bağlı)")
-    odak_kavramlar = st.multiselect(
-        "Soruda özellikle vurgulanmasını istediğiniz kavramları seçin:",
-        options=MUFREDAT_11_SINIF[unite_secimi]["kavramlar"]
-    )
-
-    st.divider()
-    st.header("🤖 AI ile Doğrudan Üretim")
-
-    saglayici = st.radio(
-        "AI Sağlayıcısı:",
-        options=["Anthropic (Claude)", "Google (Gemini)"],
-        horizontal=True
-    )
+    st.header("🤖 AI ile Üretim")
+    saglayici = st.radio("Sağlayıcı:", ["Anthropic (Claude)", "Google (Gemini)"], horizontal=True)
 
     if saglayici == "Anthropic (Claude)":
         if not ANTHROPIC_MEVCUT:
-            st.warning("`anthropic` paketi kurulu değil. Kurmak için: `pip install anthropic`")
-        api_key = st.text_input(
-            "Anthropic API Anahtarı:",
-            type="password",
-            help="Anahtarınız yalnızca bu oturumda kullanılır, hiçbir yerde saklanmaz."
-        )
-        model_secimi = st.selectbox(
-            "Model:",
-            options=["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"],
-            index=0,
-            help="Güncel model listesi Anthropic tarafından değişebilir; gerekirse buradaki değerleri güncelleyin."
-        )
+            st.warning("`anthropic` kurulu değil: `pip install anthropic`")
+        api_key = st.text_input("Anthropic API Anahtarı:", type="password")
+        model_secimi = st.selectbox("Model:", ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"])
     else:
         if not GEMINI_MEVCUT:
-            st.warning("`google-generativeai` paketi kurulu değil. Kurmak için: `pip install google-generativeai`")
-        api_key = st.text_input(
-            "Google Gemini API Anahtarı:",
-            type="password",
-            help="Anahtarınız yalnızca bu oturumda kullanılır, hiçbir yerde saklanmaz. Google AI Studio üzerinden alabilirsiniz."
-        )
-        model_secimi = st.selectbox(
-            "Model:",
-            options=["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
-            index=0,
-            help="Güncel model listesi Google tarafından değişebilir; ai.google.dev üzerinden kontrol edip gerekirse buradaki değerleri güncelleyin."
-        )
+            st.warning("`google-generativeai` kurulu değil: `pip install google-generativeai`")
+        api_key = st.text_input("Gemini API Anahtarı:", type="password")
+        model_secimi = st.selectbox("Model:", ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"])
 
-# ---- Ana Ekran ----
+
+# ==========================================
+# ANA EKRAN — SEÇİM ÖZETİ
+# ==========================================
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    st.subheader("📌 Seçili Kazanım ve Detaylar")
-    st.info(f"**Kazanım Kodu:** {kazanim_kodu}\n\n**Açıklama:** {kazanim_tanimi}")
+    st.subheader("📌 Seçili Müfredat Öğeleri")
+    st.markdown(f"**Ünite:** {unite_secimi}")
+    st.markdown(f"**Öğrenme Çıktısı:** `{cikti_kod}`")
+    st.caption(cikti_tam)
+    if surec_secimi:
+        st.markdown("**Seçili Süreç Bileşenleri:**")
+        for s in surec_secimi:
+            st.markdown(f"- {s}")
+    else:
+        st.warning("Lütfen en az bir süreç bileşeni (alt başlık) seçin.")
 
-    st.subheader("📝 Özel Bağlam Notu / Metin Girin (İsteğe Bağlı)")
+    st.subheader("📝 Özel Bağlam Notu (İsteğe Bağlı)")
     ek_baglam = st.text_area(
-        "Soru kurgusunda geçmesini istediğiniz özel tarihçi ismi, arşiv belgesi veya olayı yazabilirsiniz:",
-        placeholder="Örn: Rami Mehmed Efendi ile Count Öttingen arasındaki Karlofça müzakeresi metni kullanılsın...",
-        height=100
+        "Soruda geçmesini istediğiniz özel tarihçi, belge veya olay:",
+        placeholder="Örn: Karlofça müzakereleri bağlamı kullanılsın...",
+        height=80
     )
 
 with col2:
-    st.subheader("🏷️ Ünite Anahtar Öğeleri")
-    st.write("**Kavramlar:**")
-    st.write(", ".join([f"`{k}`" for k in MUFREDAT_11_SINIF[unite_secimi]["kavramlar"]]))
-
-    st.write("**Öne Çıkan Beceriler:**")
-    for b in MUFREDAT_11_SINIF[unite_secimi]["beceriler"]:
-        st.caption(f"• {b}")
+    st.subheader("📊 Bu Çıktının Soru Dağılımı")
+    st.caption("Müfredat tablosu (Excel) — seçili çıktının tüm süreç bileşenleri toplamı:")
+    top_bt = {z: 0 for z in ZORLUK_SECENEKLERI}
+    top_nrm = {z: 0 for z in ZORLUK_SECENEKLERI}
+    for s, v in surecler_dict.items():
+        for z in ZORLUK_SECENEKLERI:
+            top_bt[z] += v["bt"].get(z, 0)
+            top_nrm[z] += v["normal"].get(z, 0)
+    st.markdown("**Bağlam Temelli**")
+    st.markdown(f"Kolay: {top_bt['Kolay']} · Orta: {top_bt['Orta']} · Zor: {top_bt['Zor']}")
+    st.markdown("**Normal**")
+    st.markdown(f"Kolay: {top_nrm['Kolay']} · Orta: {top_nrm['Orta']} · Zor: {top_nrm['Zor']}")
 
 st.divider()
 
-# ---- Kaynak Kitap / Doküman Kütüphanesi ----
+# ==========================================
+# ANA EKRAN — KAYNAK KÜTÜPHANESİ
+# ==========================================
 st.subheader("📚 Kaynak Kitap / Doküman Kütüphanesi")
-st.caption("İstediğiniz kadar PDF veya metin (.txt) dosyası yükleyebilirsiniz. Birden fazla yükleme işlemiyle bir kütüphane oluşturabilir, dilediğiniz dosyayı listeden çıkarabilirsiniz. Yüklenen içerik, soru üretiminde birincil kaynak olarak kullanılır.")
+st.caption("İstediğiniz kadar PDF veya .txt yükleyebilirsiniz. Kaynaklar kalıcı olarak diske kaydedilir ve soru üretiminde birincil kaynak olur.")
 
 yeni_dosyalar = st.file_uploader(
-    "Kitap / ders notu / kaynak PDF ya da metin dosyalarını sürükleyip bırakın:",
-    type=["pdf", "txt"],
-    accept_multiple_files=True,
-    help="Taranmış (görsel) PDF'lerden metin çıkarılamayabilir; bu durumda dosyayı önce OCR'dan geçirmeniz gerekir.",
-    key="kutuphane_yukleyici"
+    "PDF / metin dosyalarını sürükleyip bırakın:",
+    type=["pdf", "txt"], accept_multiple_files=True, key="kutuphane_yukleyici"
 )
-
-st.caption(f"📁 Dosyalar bu bilgisayarda kalıcı olarak şurada saklanır: `{KUTUPHANE_KLASORU}`")
+st.caption(f"📁 Kayıt yeri: `{KUTUPHANE_KLASORU}`")
 
 maks_kaynak_karakter = st.slider(
     "Modele gönderilecek azami kaynak metni (karakter):",
     min_value=20000, max_value=800000, value=MAKS_KAYNAK_KARAKTER_VARSAYILAN, step=10000,
-    help="Kütüphanedeki metin bu sınırı aşarsa yalnızca ilk N karakter modele gönderilir. Kaba tahmin: 1 token ≈ 4 karakter "
-         "(150.000 karakter ≈ 35-40 bin token). Çok yüksek değerler API maliyetini ve yanıt süresini artırır; "
-         "kullandığınız modelin bağlam penceresini (context window) aşmadığından emin olun."
+    help="1 token ≈ 4 karakter. Yüksek değerler API maliyetini ve süreyi artırır."
 )
 
-col_yukle, col_temizle = st.columns([1, 1])
-with col_yukle:
-    if st.button("➕ Yüklenen Dosyaları Kütüphaneye Kaydet", use_container_width=True, disabled=not yeni_dosyalar):
-        with st.spinner("Dosyalar diske kaydediliyor..."):
+cy, ct = st.columns(2)
+with cy:
+    if st.button("➕ Kütüphaneye Kaydet", use_container_width=True, disabled=not yeni_dosyalar):
+        with st.spinner("Kaydediliyor..."):
             yuklenen_dosyalari_isle(yeni_dosyalar)
             st.session_state.kaynak_metin, st.session_state.kaynak_dosya_adlari = kutuphaneyi_diskten_yukle()
-        st.success(f"{len(yeni_dosyalar)} dosya kalıcı olarak kaydedildi.")
+        st.success(f"{len(yeni_dosyalar)} dosya kaydedildi.")
         st.rerun()
-
-with col_temizle:
-    if st.button("🗑️ Kütüphaneyi Tamamen Temizle (Diskten Sil)", use_container_width=True, disabled=not st.session_state.kaynak_dosya_adlari):
-        for dosya_yolu in KUTUPHANE_KLASORU.glob("*"):
-            dosya_yolu.unlink(missing_ok=True)
-        st.session_state.kaynak_metin = ""
-        st.session_state.kaynak_dosya_adlari = []
-        st.success("Kütüphane diskten tamamen silindi.")
+with ct:
+    if st.button("🗑️ Kütüphaneyi Temizle", use_container_width=True, disabled=not st.session_state.kaynak_dosya_adlari):
+        for d in KUTUPHANE_KLASORU.glob("*"):
+            d.unlink(missing_ok=True)
+        st.session_state.kaynak_metin, st.session_state.kaynak_dosya_adlari = "", []
+        st.success("Temizlendi.")
         st.rerun()
 
 if st.session_state.kaynak_dosya_adlari:
-    toplam_karakter = len(st.session_state.kaynak_metin)
-    st.write(f"**Kütüphanedeki dosyalar ({len(st.session_state.kaynak_dosya_adlari)} adet, toplam ~{toplam_karakter:,} karakter):**")
+    tk = len(st.session_state.kaynak_metin)
+    st.write(f"**Kütüphane ({len(st.session_state.kaynak_dosya_adlari)} dosya, ~{tk:,} karakter):**")
     for i, ad in enumerate(st.session_state.kaynak_dosya_adlari):
         c1, c2 = st.columns([5, 1])
         c1.write(f"📄 {ad}")
@@ -537,125 +435,157 @@ if st.session_state.kaynak_dosya_adlari:
             (KUTUPHANE_KLASORU / ad).unlink(missing_ok=True)
             st.session_state.kaynak_metin, st.session_state.kaynak_dosya_adlari = kutuphaneyi_diskten_yukle()
             st.rerun()
-
-    if toplam_karakter > maks_kaynak_karakter:
-        st.warning(
-            f"Kütüphane {toplam_karakter:,} karakter içeriyor; prompt şişmesini önlemek için modele gönderilirken "
-            f"yalnızca ilk {maks_kaynak_karakter:,} karakter kullanılacaktır. Yukarıdaki kaydırıcıdan bu sınırı "
-            f"yükseltebilir veya ilgili kısmı 'Özel Bağlam Notu' alanına özetleyerek belirtebilirsiniz."
-        )
-
-    with st.expander("Kütüphane içeriğini önizle"):
-        st.text(st.session_state.kaynak_metin[:3000] + ("..." if len(st.session_state.kaynak_metin) > 3000 else ""))
+    if tk > maks_kaynak_karakter:
+        st.warning(f"Kütüphane {tk:,} karakter; yalnızca ilk {maks_kaynak_karakter:,} karakter modele gönderilecek. Sınırı yukarıdan artırabilirsiniz.")
 else:
-    st.caption("Henüz kütüphaneye dosya eklenmedi. Dosya yüklenmezse sorular genel tarih bilginizle kurgusal olarak üretilir.")
+    st.caption("Henüz kaynak eklenmedi. Kaynak yoksa sorular genel tarih bilgisiyle üretilir.")
 
 st.divider()
 
-# ---- Prompt Üretme ve Gösterim Alanı ----
-st.subheader("🚀 Yapay Zeka Soru Üretim Promptu")
+# ==========================================
+# ANA EKRAN — PROMPT VE ÜRETİM
+# ==========================================
+st.subheader("🚀 Soru Üretimi")
 
-generated_prompt = build_prompt(
-    unite_secimi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
-    odak_kavramlar, ek_baglam, soru_sayisi,
-    kaynak_metin=st.session_state.kaynak_metin[:maks_kaynak_karakter]
-)
+if surec_secimi:
+    generated_prompt = build_prompt(
+        unite_secimi, cikti_kod, cikti_tam, surec_secimi, soru_kategorisi,
+        zorluk, soru_sayisi,
+        kaynak_metin=st.session_state.kaynak_metin[:maks_kaynak_karakter],
+        ek_baglam=ek_baglam
+    )
+else:
+    generated_prompt = "⚠️ Lütfen sol menüden en az bir süreç bileşeni (alt başlık) seçin."
 
-st.text_area(
-    "Aşağıdaki promptu LLM (Claude, ChatGPT, Gemini) modeline yapıştırarak sorunuzu üretebilirsiniz:",
-    value=generated_prompt,
-    height=320
-)
+with st.expander("🔍 Oluşturulan promptu görüntüle / kopyala"):
+    st.text_area("Prompt:", value=generated_prompt, height=300)
 
-col_btn0, col_btn1, col_btn2, col_btn3 = st.columns(4)
-
-with col_btn0:
+b0, b1, b2 = st.columns(3)
+with b0:
     uret_tiklandi = st.button(
-        "✨ Soruyu Şimdi Üret",
-        use_container_width=True,
-        type="primary",
-        disabled=not (ANTHROPIC_MEVCUT or GEMINI_MEVCUT)
+        "✨ Soruyu Şimdi Üret", use_container_width=True, type="primary",
+        disabled=not (surec_secimi and (ANTHROPIC_MEVCUT or GEMINI_MEVCUT))
     )
+with b1:
+    st.download_button("⬇️ Promptu İndir (.txt)", data=generated_prompt,
+                       file_name=f"prompt_{cikti_kod}.txt", mime="text/plain", use_container_width=True)
+with b2:
+    st.download_button("⬇️ Yapılandırma (.json)",
+                       data=json.dumps({
+                           "unite": unite_secimi, "cikti_kod": cikti_kod, "cikti_tam": cikti_tam,
+                           "surecler": surec_secimi, "soru_kategorisi": soru_kategorisi,
+                           "zorluk": zorluk, "soru_sayisi": soru_sayisi
+                       }, ensure_ascii=False, indent=2),
+                       file_name=f"config_{cikti_kod}.json", mime="application/json", use_container_width=True)
 
-with col_btn1:
-    if st.button("💾 Promptu Geçmişe Kaydet", use_container_width=True):
-        gecmise_ekle(unite_secimi, kazanim_kodu, soru_tipi, zorluk, generated_prompt)
-        st.success("Geçmişe kaydedildi!")
-
-with col_btn2:
-    st.download_button(
-        label="⬇️ Prompt Olarak İndir (.txt)",
-        data=generated_prompt,
-        file_name=f"tarih_soru_prompt_{kazanim_kodu}.txt",
-        mime="text/plain",
-        use_container_width=True
-    )
-
-with col_btn3:
-    disa_aktarim = {
-        "unite": unite_secimi,
-        "kazanim_kodu": kazanim_kodu,
-        "kazanim_tanimi": kazanim_tanimi,
-        "soru_tipi": soru_tipi,
-        "zorluk": zorluk,
-        "soru_sayisi": soru_sayisi,
-        "odak_kavramlar": odak_kavramlar,
-        "ek_baglam": ek_baglam,
-        "kaynak_dosyalar": st.session_state.kaynak_dosya_adlari,
-        "prompt": generated_prompt
-    }
-    st.download_button(
-        label="⬇️ JSON Olarak İndir",
-        data=json.dumps(disa_aktarim, ensure_ascii=False, indent=2),
-        file_name=f"tarih_soru_config_{kazanim_kodu}.json",
-        mime="application/json",
-        use_container_width=True
-    )
-
-st.success("✅ Prompt başarıyla kurgulandı! Yukarıdaki metni kopyalayıp doğrudan modelinize gönderebilirsiniz.")
-
-# ---- Doğrudan AI Üretimi ----
 if uret_tiklandi:
     if saglayici == "Anthropic (Claude)" and not ANTHROPIC_MEVCUT:
-        st.error("`anthropic` paketi kurulu değil. Terminalde `pip install anthropic` çalıştırıp uygulamayı yeniden başlatın.")
+        st.error("`anthropic` kurulu değil.")
     elif saglayici == "Google (Gemini)" and not GEMINI_MEVCUT:
-        st.error("`google-generativeai` paketi kurulu değil. Terminalde `pip install google-generativeai` çalıştırıp uygulamayı yeniden başlatın.")
+        st.error("`google-generativeai` kurulu değil.")
     elif not api_key:
-        st.error(f"Lütfen sol menüden {saglayici} API anahtarınızı girin.")
+        st.error(f"Lütfen {saglayici} API anahtarınızı girin.")
     else:
-        with st.spinner("Soru üretiliyor, lütfen bekleyin..."):
+        with st.spinner("Soru üretiliyor..."):
             try:
                 if saglayici == "Anthropic (Claude)":
-                    st.session_state.uretilen_soru = soru_uret_api(api_key, model_secimi, generated_prompt)
+                    sonuc = soru_uret_api(api_key, model_secimi, generated_prompt)
                 else:
-                    st.session_state.uretilen_soru = soru_uret_gemini(api_key, model_secimi, generated_prompt)
+                    sonuc = soru_uret_gemini(api_key, model_secimi, generated_prompt)
+                st.session_state.uretilen_soru = sonuc
+                st.session_state.son_uretim_meta = {
+                    "unite": unite_secimi, "cikti_kod": cikti_kod, "cikti_tam": cikti_tam,
+                    "surecler": surec_secimi, "soru_kategorisi": soru_kategorisi,
+                    "zorluk": zorluk, "soru_sayisi": soru_sayisi,
+                    "model": model_secimi, "zaman": datetime.now().strftime("%Y-%m-%d %H:%M")
+                }
             except Exception as e:
                 if ANTHROPIC_MEVCUT and isinstance(e, anthropic.AuthenticationError):
-                    st.error("API anahtarı geçersiz görünüyor. Lütfen kontrol edip tekrar deneyin.")
-                elif ANTHROPIC_MEVCUT and isinstance(e, anthropic.APIStatusError):
-                    st.error(f"API hatası: {e}")
+                    st.error("API anahtarı geçersiz görünüyor.")
                 else:
-                    st.error(f"Beklenmeyen bir hata oluştu: {e}")
+                    st.error(f"Hata oluştu: {e}")
 
 if st.session_state.uretilen_soru:
     st.divider()
-    st.subheader("📄 Üretilen Soru")
+    st.subheader("📄 Üretilen Soru(lar)")
     st.markdown(st.session_state.uretilen_soru)
+
+    k1, k2 = st.columns(2)
+    with k1:
+        if st.button("💾 Bu Soruları Soru Havuzuna Kaydet", use_container_width=True, type="primary"):
+            meta = st.session_state.son_uretim_meta or {}
+            kayit = {
+                "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
+                "unite": meta.get("unite", unite_secimi),
+                "cikti_kod": meta.get("cikti_kod", cikti_kod),
+                "cikti_tam": meta.get("cikti_tam", cikti_tam),
+                "surecler": meta.get("surecler", surec_secimi),
+                "soru_kategorisi": meta.get("soru_kategorisi", soru_kategorisi),
+                "zorluk": meta.get("zorluk", zorluk),
+                "soru_sayisi": meta.get("soru_sayisi", soru_sayisi),
+                "model": meta.get("model", model_secimi),
+                "zaman": meta.get("zaman", datetime.now().strftime("%Y-%m-%d %H:%M")),
+                "icerik": st.session_state.uretilen_soru
+            }
+            havuza_kaydet(kayit)
+            st.success("Soru havuzuna kaydedildi! Aşağıdaki havuzdan erişebilirsiniz.")
+    with k2:
+        st.download_button("⬇️ Bu Soruları İndir (.md)", data=st.session_state.uretilen_soru,
+                           file_name=f"sorular_{cikti_kod}_{zorluk}.md", mime="text/markdown", use_container_width=True)
+
+st.divider()
+
+# ==========================================
+# ANA EKRAN — SORU HAVUZU
+# ==========================================
+st.subheader("🗂️ Soru Havuzu")
+st.caption("Kaydedilen tüm sorular ünite / öğrenme çıktısı / alt başlık bilgisiyle burada saklanır ve istendiğinde erişilir.")
+
+havuz = havuzu_yukle()
+
+if not havuz:
+    st.info("Henüz havuza kaydedilmiş soru yok. Yukarıda soru üretip 'Soru Havuzuna Kaydet' butonuna basın.")
+else:
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        f_unite = st.selectbox("Üniteye göre:", ["(Tümü)"] + list(MUFREDAT.keys()), key="f_unite")
+    with f2:
+        cikti_secenek = ["(Tümü)"] + (list(MUFREDAT[f_unite].keys()) if f_unite != "(Tümü)" else [])
+        f_cikti = st.selectbox("Çıktıya göre:", cikti_secenek, key="f_cikti")
+    with f3:
+        f_kat = st.selectbox("Kategoriye göre:", ["(Tümü)", "Bağlam Temelli", "Normal"], key="f_kat")
+
+    filtreli = havuz
+    if f_unite != "(Tümü)":
+        filtreli = [k for k in filtreli if k.get("unite") == f_unite]
+    if f_cikti != "(Tümü)":
+        filtreli = [k for k in filtreli if k.get("cikti_kod") == f_cikti]
+    if f_kat != "(Tümü)":
+        filtreli = [k for k in filtreli if k.get("soru_kategorisi") == f_kat]
+
+    st.write(f"**{len(filtreli)} / {len(havuz)} kayıt gösteriliyor.**")
+
     st.download_button(
-        label="⬇️ Üretilen Soruyu İndir (.md)",
-        data=st.session_state.uretilen_soru,
-        file_name=f"tarih_soru_{kazanim_kodu}.md",
-        mime="text/markdown"
+        "⬇️ Tüm Havuzu Dışa Aktar (.json)",
+        data=json.dumps(havuz, ensure_ascii=False, indent=2),
+        file_name="soru_havuzu.json", mime="application/json"
     )
 
-# ---- Geçmiş Kayıtlar ----
-if st.session_state.gecmis:
-    st.divider()
-    with st.expander(f"🕓 Geçmiş Kayıtlar ({len(st.session_state.gecmis)})", expanded=False):
-        for i, kayit in enumerate(st.session_state.gecmis):
-            st.markdown(
-                f"**{kayit['zaman']}** — {kayit['unite'][:35]}... "
-                f"| `{kayit['kazanim']}` | {kayit['soru_tipi']} | {kayit['zorluk']}"
-            )
-            with st.popover(f"Görüntüle #{i+1}"):
-                st.text_area("Prompt", value=kayit["prompt"], height=200, key=f"gecmis_{i}")
+    for kayit in filtreli:
+        baslik = f"📘 {kayit.get('cikti_kod','')} · {kayit.get('soru_kategorisi','')} · {kayit.get('zorluk','')} · {kayit.get('soru_sayisi','')} soru · {kayit.get('zaman','')}"
+        with st.expander(baslik):
+            st.caption(f"**Ünite:** {kayit.get('unite','')}")
+            st.caption(f"**Çıktı:** {kayit.get('cikti_tam','')}")
+            if kayit.get("surecler"):
+                st.caption("**Alt başlıklar:** " + "; ".join(kayit["surecler"]))
+            st.markdown("---")
+            st.markdown(kayit.get("icerik", ""))
+            d1, d2 = st.columns([1, 5])
+            with d1:
+                st.download_button("⬇️ .md", data=kayit.get("icerik", ""),
+                                   file_name=f"soru_{kayit.get('cikti_kod','')}_{kayit.get('id','')}.md",
+                                   mime="text/markdown", key=f"dl_{kayit['id']}")
+            with d2:
+                if st.button("🗑️ Bu kaydı havuzdan sil", key=f"sil_{kayit['id']}"):
+                    havuzdan_sil(kayit["id"])
+                    st.rerun()
