@@ -392,17 +392,11 @@ yeni_dosyalar = st.file_uploader(
     "Kitap / ders notu / kaynak PDF ya da metin dosyalarını sürükleyip bırakın:",
     type=["pdf", "txt"],
     accept_multiple_files=True,
-    help="Taranmış (görsel) PDF'lerden metin çıkarılamayabilir; bu durumda dosyayı önce OCR'dan geçirmeniz gerekir."
+    help="Taranmış (görsel) PDF'lerden metin çıkarılamayabilir; bu durumda dosyayı önce OCR'dan geçirmeniz gerekir.",
+    key="kutuphane_yukleyici"
 )
 
 st.caption(f"📁 Dosyalar bu bilgisayarda kalıcı olarak şurada saklanır: `{KUTUPHANE_KLASORU}`")
-
-yeni_dosyalar = st.file_uploader(
-    "Kitap / ders notu / kaynak PDF ya da metin dosyalarını sürükleyip bırakın:",
-    type=["pdf", "txt"],
-    accept_multiple_files=True,
-    help="Taranmış (görsel) PDF'lerden metin çıkarılamayabilir; bu durumda dosyayı önce OCR'dan geçirmeniz gerekir."
-)
 
 col_yukle, col_temizle = st.columns([1, 1])
 with col_yukle:
