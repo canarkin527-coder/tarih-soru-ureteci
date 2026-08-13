@@ -1,5 +1,7 @@
 import streamlit as st
 import json
+import os
+from pathlib import Path
 from datetime import datetime
 
 try:
@@ -15,6 +17,8 @@ except ImportError:
     PYPDF_MEVCUT = False
 
 MAKS_KAYNAK_KARAKTER = 15000  # Prompt şişmesini önlemek için kaynak metinden alınacak azami karakter
+KUTUPHANE_KLASORU = Path(__file__).parent / "kaynak_kutuphane"  # Yüklenen dosyaların kalıcı olarak saklandığı yerel klasör
+KUTUPHANE_KLASORU.mkdir(exist_ok=True)
 
 # ==========================================
 # 0. SAYFA AYARLARI
@@ -90,22 +94,25 @@ ZORLUK_SECENEKLERI = ["Kolay", "Orta", "Zor (ÖSYM Üst Seviye)", "Derecelendiri
 # ==========================================
 
 def init_session_state():
-    """Oturum durumunu (geçmiş, favoriler, üretilen soru, kaynak metin) başlatır."""
+    """Oturum durumunu (geçmiş, favoriler, üretilen soru, kaynak metin) başlatır.
+    Kaynak kütüphanesi diskteki kalıcı klasörden otomatik olarak yüklenir."""
     if "gecmis" not in st.session_state:
         st.session_state.gecmis = []
     if "favoriler" not in st.session_state:
         st.session_state.favoriler = []
     if "uretilen_soru" not in st.session_state:
         st.session_state.uretilen_soru = None
-    if "kaynak_metin" not in st.session_state:
-        st.session_state.kaynak_metin = ""
-    if "kaynak_dosya_adlari" not in st.session_state:
-        st.session_state.kaynak_dosya_adlari = []
+    if "kutuphane_yuklendi" not in st.session_state:
+        # Uygulama ilk açıldığında diskteki mevcut kütüphaneyi oku
+        metin, adlar = kutuphaneyi_diskten_yukle()
+        st.session_state.kaynak_metin = metin
+        st.session_state.kaynak_dosya_adlari = adlar
+        st.session_state.kutuphane_yuklendi = True
 
 
-def pdf_metin_cikar(dosya):
-    """Yüklenen bir PDF dosyasından metin çıkarır."""
-    reader = PdfReader(dosya)
+def pdf_metin_cikar(dosya_yolu):
+    """Diskteki bir PDF dosyasından metin çıkarır."""
+    reader = PdfReader(dosya_yolu)
     parcalar = []
     for sayfa in reader.pages:
         try:
@@ -115,9 +122,9 @@ def pdf_metin_cikar(dosya):
     return "\n".join(parcalar).strip()
 
 
-def txt_metin_cikar(dosya):
-    """Yüklenen bir .txt dosyasından metin çıkarır (birden çok kodlamayı dener)."""
-    ham = dosya.read()
+def txt_metin_cikar(dosya_yolu):
+    """Diskteki bir .txt dosyasından metin çıkarır (birden çok kodlamayı dener)."""
+    ham = Path(dosya_yolu).read_bytes()
     for kodlama in ("utf-8", "windows-1254", "iso-8859-9", "latin-1"):
         try:
             return ham.decode(kodlama).strip()
@@ -126,29 +133,56 @@ def txt_metin_cikar(dosya):
     return ham.decode("utf-8", errors="ignore").strip()
 
 
-def yuklenen_dosyalari_isle(dosyalar):
-    """Yüklenen tüm dosyalardan metni çıkarıp birleştirir, dosya adlarını döndürür."""
+@st.cache_data(show_spinner=False)
+def dosyadan_metin_cikar(dosya_yolu_str, degisiklik_zamani):
+    """Diskteki bir dosyadan metin çıkarır. `degisiklik_zamani` önbelleği geçersiz kılmak için kullanılır
+    (dosya değişirse Streamlit önbelleği otomatik yeniler)."""
+    dosya_yolu = Path(dosya_yolu_str)
+    if dosya_yolu.suffix.lower() == ".pdf":
+        if not PYPDF_MEVCUT:
+            return ""
+        return pdf_metin_cikar(dosya_yolu)
+    return txt_metin_cikar(dosya_yolu)
+
+
+def dosyayi_kutuphaneye_kaydet(yuklenen_dosya):
+    """Streamlit'ten gelen yüklenen dosyayı kalıcı kütüphane klasörüne yazar, çakışan adları numaralandırır."""
+    hedef = KUTUPHANE_KLASORU / yuklenen_dosya.name
+    sayac = 1
+    while hedef.exists():
+        hedef = KUTUPHANE_KLASORU / f"{Path(yuklenen_dosya.name).stem}_{sayac}{Path(yuklenen_dosya.name).suffix}"
+        sayac += 1
+    hedef.write_bytes(yuklenen_dosya.getbuffer())
+    return hedef
+
+
+def kutuphaneyi_diskten_yukle():
+    """Kütüphane klasöründeki tüm dosyaları okuyup birleşik kaynak metnini ve dosya adlarını döndürür."""
     tum_metin = []
     dosya_adlari = []
+    for dosya_yolu in sorted(KUTUPHANE_KLASORU.glob("*")):
+        if dosya_yolu.suffix.lower() not in (".pdf", ".txt"):
+            continue
+        try:
+            metin = dosyadan_metin_cikar(str(dosya_yolu), dosya_yolu.stat().st_mtime)
+        except Exception as e:
+            st.error(f"'{dosya_yolu.name}' okunurken hata oluştu: {e}")
+            continue
+        if metin:
+            tum_metin.append(f"### Kaynak: {dosya_yolu.name}\n{metin}")
+            dosya_adlari.append(dosya_yolu.name)
+        else:
+            st.warning(f"'{dosya_yolu.name}' içinden metin çıkarılamadı (taranmış görsel PDF olabilir).")
+    return "\n\n---\n\n".join(tum_metin), dosya_adlari
+
+
+def yuklenen_dosyalari_isle(dosyalar):
+    """Yeni yüklenen dosyaları diske kalıcı olarak kaydeder."""
     for dosya in dosyalar:
         try:
-            if dosya.type == "application/pdf" or dosya.name.lower().endswith(".pdf"):
-                if not PYPDF_MEVCUT:
-                    st.error(f"'{dosya.name}' okunamadı: `pypdf` paketi kurulu değil (`pip install pypdf`).")
-                    continue
-                metin = pdf_metin_cikar(dosya)
-            else:
-                metin = txt_metin_cikar(dosya)
-
-            if metin:
-                tum_metin.append(f"### Kaynak: {dosya.name}\n{metin}")
-                dosya_adlari.append(dosya.name)
-            else:
-                st.warning(f"'{dosya.name}' içinden metin çıkarılamadı (taranmış görsel PDF olabilir).")
+            dosyayi_kutuphaneye_kaydet(dosya)
         except Exception as e:
-            st.error(f"'{dosya.name}' işlenirken hata oluştu: {e}")
-
-    return "\n\n---\n\n".join(tum_metin), dosya_adlari
+            st.error(f"'{dosya.name}' diske kaydedilirken hata oluştu: {e}")
 
 
 def soru_uret_api(api_key, model, prompt):
@@ -361,24 +395,32 @@ yeni_dosyalar = st.file_uploader(
     help="Taranmış (görsel) PDF'lerden metin çıkarılamayabilir; bu durumda dosyayı önce OCR'dan geçirmeniz gerekir."
 )
 
+st.caption(f"📁 Dosyalar bu bilgisayarda kalıcı olarak şurada saklanır: `{KUTUPHANE_KLASORU}`")
+
+yeni_dosyalar = st.file_uploader(
+    "Kitap / ders notu / kaynak PDF ya da metin dosyalarını sürükleyip bırakın:",
+    type=["pdf", "txt"],
+    accept_multiple_files=True,
+    help="Taranmış (görsel) PDF'lerden metin çıkarılamayabilir; bu durumda dosyayı önce OCR'dan geçirmeniz gerekir."
+)
+
 col_yukle, col_temizle = st.columns([1, 1])
 with col_yukle:
-    if st.button("➕ Yüklenen Dosyaları Kütüphaneye Ekle", use_container_width=True, disabled=not yeni_dosyalar):
-        with st.spinner("Dosyalar işleniyor..."):
-            yeni_metin, yeni_adlar = yuklenen_dosyalari_isle(yeni_dosyalar)
-        if yeni_metin:
-            if st.session_state.kaynak_metin:
-                st.session_state.kaynak_metin += "\n\n---\n\n" + yeni_metin
-            else:
-                st.session_state.kaynak_metin = yeni_metin
-            st.session_state.kaynak_dosya_adlari.extend(yeni_adlar)
-            st.success(f"{len(yeni_adlar)} dosya kütüphaneye eklendi.")
+    if st.button("➕ Yüklenen Dosyaları Kütüphaneye Kaydet", use_container_width=True, disabled=not yeni_dosyalar):
+        with st.spinner("Dosyalar diske kaydediliyor..."):
+            yuklenen_dosyalari_isle(yeni_dosyalar)
+            st.session_state.kaynak_metin, st.session_state.kaynak_dosya_adlari = kutuphaneyi_diskten_yukle()
+        st.success(f"{len(yeni_dosyalar)} dosya kalıcı olarak kaydedildi.")
+        st.rerun()
 
 with col_temizle:
-    if st.button("🗑️ Kütüphaneyi Tamamen Temizle", use_container_width=True, disabled=not st.session_state.kaynak_dosya_adlari):
+    if st.button("🗑️ Kütüphaneyi Tamamen Temizle (Diskten Sil)", use_container_width=True, disabled=not st.session_state.kaynak_dosya_adlari):
+        for dosya_yolu in KUTUPHANE_KLASORU.glob("*"):
+            dosya_yolu.unlink(missing_ok=True)
         st.session_state.kaynak_metin = ""
         st.session_state.kaynak_dosya_adlari = []
-        st.success("Kütüphane temizlendi.")
+        st.success("Kütüphane diskten tamamen silindi.")
+        st.rerun()
 
 if st.session_state.kaynak_dosya_adlari:
     toplam_karakter = len(st.session_state.kaynak_metin)
@@ -387,12 +429,8 @@ if st.session_state.kaynak_dosya_adlari:
         c1, c2 = st.columns([5, 1])
         c1.write(f"📄 {ad}")
         if c2.button("Kaldır", key=f"kaldir_{i}"):
-            # Dosyayı kütüphaneden çıkar ve metni yeniden oluştur
-            st.session_state.kaynak_dosya_adlari.pop(i)
-            st.session_state.kaynak_metin = "\n\n---\n\n".join(
-                parca for parca in st.session_state.kaynak_metin.split("\n\n---\n\n")
-                if not parca.startswith(f"### Kaynak: {ad}")
-            )
+            (KUTUPHANE_KLASORU / ad).unlink(missing_ok=True)
+            st.session_state.kaynak_metin, st.session_state.kaynak_dosya_adlari = kutuphaneyi_diskten_yukle()
             st.rerun()
 
     if toplam_karakter > MAKS_KAYNAK_KARAKTER:
