@@ -8,6 +8,14 @@ try:
 except ImportError:
     ANTHROPIC_MEVCUT = False
 
+try:
+    from pypdf import PdfReader
+    PYPDF_MEVCUT = True
+except ImportError:
+    PYPDF_MEVCUT = False
+
+MAKS_KAYNAK_KARAKTER = 15000  # Prompt şişmesini önlemek için kaynak metinden alınacak azami karakter
+
 # ==========================================
 # 0. SAYFA AYARLARI
 # ==========================================
@@ -82,13 +90,65 @@ ZORLUK_SECENEKLERI = ["Kolay", "Orta", "Zor (ÖSYM Üst Seviye)", "Derecelendiri
 # ==========================================
 
 def init_session_state():
-    """Oturum durumunu (geçmiş, favoriler, üretilen soru) başlatır."""
+    """Oturum durumunu (geçmiş, favoriler, üretilen soru, kaynak metin) başlatır."""
     if "gecmis" not in st.session_state:
         st.session_state.gecmis = []
     if "favoriler" not in st.session_state:
         st.session_state.favoriler = []
     if "uretilen_soru" not in st.session_state:
         st.session_state.uretilen_soru = None
+    if "kaynak_metin" not in st.session_state:
+        st.session_state.kaynak_metin = ""
+    if "kaynak_dosya_adlari" not in st.session_state:
+        st.session_state.kaynak_dosya_adlari = []
+
+
+def pdf_metin_cikar(dosya):
+    """Yüklenen bir PDF dosyasından metin çıkarır."""
+    reader = PdfReader(dosya)
+    parcalar = []
+    for sayfa in reader.pages:
+        try:
+            parcalar.append(sayfa.extract_text() or "")
+        except Exception:
+            continue
+    return "\n".join(parcalar).strip()
+
+
+def txt_metin_cikar(dosya):
+    """Yüklenen bir .txt dosyasından metin çıkarır (birden çok kodlamayı dener)."""
+    ham = dosya.read()
+    for kodlama in ("utf-8", "windows-1254", "iso-8859-9", "latin-1"):
+        try:
+            return ham.decode(kodlama).strip()
+        except (UnicodeDecodeError, AttributeError):
+            continue
+    return ham.decode("utf-8", errors="ignore").strip()
+
+
+def yuklenen_dosyalari_isle(dosyalar):
+    """Yüklenen tüm dosyalardan metni çıkarıp birleştirir, dosya adlarını döndürür."""
+    tum_metin = []
+    dosya_adlari = []
+    for dosya in dosyalar:
+        try:
+            if dosya.type == "application/pdf" or dosya.name.lower().endswith(".pdf"):
+                if not PYPDF_MEVCUT:
+                    st.error(f"'{dosya.name}' okunamadı: `pypdf` paketi kurulu değil (`pip install pypdf`).")
+                    continue
+                metin = pdf_metin_cikar(dosya)
+            else:
+                metin = txt_metin_cikar(dosya)
+
+            if metin:
+                tum_metin.append(f"### Kaynak: {dosya.name}\n{metin}")
+                dosya_adlari.append(dosya.name)
+            else:
+                st.warning(f"'{dosya.name}' içinden metin çıkarılamadı (taranmış görsel PDF olabilir).")
+        except Exception as e:
+            st.error(f"'{dosya.name}' işlenirken hata oluştu: {e}")
+
+    return "\n\n---\n\n".join(tum_metin), dosya_adlari
 
 
 def soru_uret_api(api_key, model, prompt):
@@ -96,7 +156,7 @@ def soru_uret_api(api_key, model, prompt):
     client = anthropic.Anthropic(api_key=api_key)
     response = client.messages.create(
         model=model,
-        max_tokens=4000,
+        max_tokens=8000,
         messages=[{"role": "user", "content": prompt}]
     )
     parcalar = [blok.text for blok in response.content if blok.type == "text"]
@@ -104,7 +164,7 @@ def soru_uret_api(api_key, model, prompt):
 
 
 def build_prompt(unite_adi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
-                  odak_kavramlar, ek_baglam, soru_sayisi):
+                  odak_kavramlar, ek_baglam, soru_sayisi, kaynak_metin=""):
     """Seçilen parametrelere göre LLM'e gönderilecek promptu oluşturur."""
     tum_kavramlar = MUFREDAT_11_SINIF[unite_adi]["kavramlar"]
     beceriler = ", ".join(MUFREDAT_11_SINIF[unite_adi]["beceriler"])
@@ -125,15 +185,31 @@ def build_prompt(unite_adi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
 """
 
     baglam_temelli_mi = "Bağlam Temelli" in soru_tipi
-    baglam_soru_sayisi = max(soru_sayisi, 2) if baglam_temelli_mi else soru_sayisi
+    baglam_soru_sayisi = max(soru_sayisi, 5) if baglam_temelli_mi else soru_sayisi
 
     baglam_temelli_blok = """
 5. **Bağlam Temelli Soru Kurgusu (ÖSYM / TYMM Mantığı — ZORUNLU):**
-   - Önce TEK, uzun ve zengin bir bağlam metni (öncül) yazılmalıdır. Bu metin en az 120-180 kelime uzunluğunda olmalı; birden fazla cümle/paragraftan oluşan, ayrıntılı bir arşiv belgesi alıntısı, seyahatname parçası, tarihçi değerlendirmesi, karşılaştırmalı tablo/kronoloji anlatımı ya da özgün olay anlatımı şeklinde kurgulanmalıdır. Metin; kişi, yer, tarih, sebep-sonuç ilişkisi gibi somut ayrıntılar içermeli, öğrencinin metni dikkatle okuyup çıkarım yapmasını gerektirecek yoğunlukta olmalıdır.
-   - Bu TEK bağlam metnine dayanan EN AZ 2 (iki) farklı soru üretilmelidir (gerçek ÖSYM sınavlarındaki "Bu parçaya göre..." mantığıyla aynı paragrafa bağlı ardışık sorular gibi).
-   - Bağlama bağlı sorular birbirinin aynısı olmamalı; her biri kazanımın farklı bir boyutunu (ör. biri doğrudan bilgi/çıkarım, diğeri neden-sonuç ilişkisi, bir diğeri karşılaştırma veya yargıya ulaşma/ulaşamama) ölçmelidir.
-   - Bağlam metni yalnızca bir kez, sorular grubunun en başında verilmeli; her soru öncesinde tekrarlanmamalı, sorular metnin altında "1.", "2." şeklinde sıralanmalıdır.
-   - Her bağlam temelli soru da 5 seçenekli (A-E) olmalı, güçlü çeldiricilerle ve ayrıntılı "Çözüm Açıklaması" ile desteklenmelidir.
+   - Önce TEK, uzun ve zengin bir bağlam metni (öncül) yazılmalıdır. Bu metin en az 150-250 kelime uzunluğunda olmalı; birden fazla cümle/paragraftan oluşan, ayrıntılı bir arşiv belgesi alıntısı, seyahatname parçası, tarihçi değerlendirmesi, karşılaştırmalı tablo/kronoloji anlatımı ya da özgün olay anlatımı şeklinde kurgulanmalıdır. Metin; kişi, yer, tarih, sebep-sonuç ilişkisi gibi somut ayrıntılar içermeli, öğrencinin metni dikkatle okuyup çıkarım yapmasını gerektirecek yoğunlukta olmalıdır.
+   - Bu TEK bağlam metnine dayanan EN AZ 5 (beş) farklı soru üretilmelidir (gerçek ÖSYM sınavlarındaki "Bu parçaya göre..." mantığıyla aynı paragrafa bağlı ardışık soru grupları gibi). Sayı asla 5'in altında olmamalıdır; gerekirse metni bu kadar soruyu kaldıracak zenginlikte kurgula.
+   - Bağlama bağlı 5+ soru birbirinin aynısı ya da yakın varyasyonu OLMAMALI; her biri kazanımın ayrı bir bilişsel boyutunu ölçmelidir. Örnek dağılım: (1) metinden doğrudan bilgi/çıkarım, (2) neden-sonuç ilişkisi, (3) karşılaştırma/benzerlik-farklılık, (4) yargıya ulaşma/ulaşamama, (5) genelleme veya kavramsal ilişkilendirme. Mümkünse 5'ten fazla soru üretilerek çeşitlilik artırılabilir.
+   - **Çeldirici Kalitesi (ZORUNLU):** Her sorunun 5 seçeneğindeki (A-E) yanlış seçenekler (çeldiriciler) rastgele veya alakasız olmamalı; metinle ilişkili ama ustaca yanıltıcı olmalıdır — kısmen doğru ama eksik bilgi, metinde geçen ama soruyla ilgisiz bir ayrıntı, tarihsel olarak doğru ama bu bağlamda geçersiz bir bilgi, ya da mantık hatası içeren makul görünümlü ifadeler gibi teknikler kullanılmalıdır. Çeldiriciler öğrencinin dikkatsiz okumasını sınayacak nitelikte olmalı, "bariz yanlış" seçenekler kesinlikle kullanılmamalıdır.
+   - Bağlam metni yalnızca bir kez, sorular grubunun en başında verilmeli; her soru öncesinde tekrarlanmamalı, sorular metnin altında "1.", "2.", "3." ... şeklinde sıralanmalıdır.
+   - Her bağlam temelli soru 5 seçenekli (A-E) olmalı, doğru cevap net belirtilmeli ve her biri için ayrıntılı, çeldiricilerin neden yanlış olduğunu da açıklayan bir "Çözüm Açıklaması" yazılmalıdır.
+"""
+
+    kaynak_blok = ""
+    if kaynak_metin:
+        kaynak_blok = f"""
+7. **Yüklenen Kaynak Materyal Kullanımı (ZORUNLU ÖNCELİK):**
+   - Aşağıda öğretmenin yüklediği kitap/döküman parçaları yer almaktadır. Bağlam metinlerini ve soruları KURGUSAL olarak değil, ÖNCELİKLE bu kaynaklardaki bilgi, olay, kişi, tarih ve alıntılara dayanarak oluştur.
+   - Kaynaklarda birden fazla dosya varsa, kazanıma ve üniteye en uygun olan bölüm(ler)i seç; konuyla ilgisiz kısımları kullanma.
+   - Kaynaktan doğrudan uzun alıntı kopyalamak yerine, kaynaktaki bilgiyi kendi tarihsel bağlam metnini yazarken zemin olarak kullan; gerekirse kısa (en fazla 1-2 cümlelik) doğrudan alıntılara yer verebilirsin.
+   - Kaynakta kazanımla ilgili yeterli bilgi yoksa, bunu belirt ve genel tarihî bilgini kullanarak devam et.
+
+---
+### 📚 YÜKLENEN KAYNAK MATERYAL(LER)
+{kaynak_metin}
+---
 """
 
     prompt = f"""Sen Türkiye Yüzyılı Maarif Modeli (TYMM) standartlarına hakim, ÖSYM tarzında üst düzey bilişsel ölçme değerlendirme soruları hazırlayan uzman bir Tarih soru yazarısın.
@@ -152,7 +228,7 @@ Aşağıdaki parametreler doğrultusunda {"aynı bağlam metnine dayanan EN AZ "
 - **Üretilecek Soru Sayısı:** {baglam_soru_sayisi if baglam_temelli_mi else soru_sayisi}
 {"- **Özel Bağlam / Metin Notu:** " + ek_baglam if ek_baglam else ""}
 ---
-
+{kaynak_blok}
 ### ✍️ SORU YAZIM KURALLARI VE BİÇİMLENDİRME:
 1. **Bağlam Metni (Öncül):**
    - Sorunun başında mutlaka tarihsel bir bağlam (birinci elden arşiv belgesi, seyahatname alıntısı, tarihçi görüşü, karşılaştırma tablosu veya tarihsel olay özeti) yer almalıdır.
@@ -164,7 +240,7 @@ Aşağıdaki parametreler doğrultusunda {"aynı bağlam metnine dayanan EN AZ "
 {coktan_secmeli_blok if "Çoktan Seçmeli" in soru_tipi or "ÖSYM" in soru_tipi else ""}{acik_uclu_blok if "Açık Uçlu" in soru_tipi or "Klasik" in soru_tipi else ""}{baglam_temelli_blok if baglam_temelli_mi else ""}
 6. **Genel Kalite Kriterleri:**
    - Sorular birbirini tekrar etmemeli, her biri farklı bir alt beceriyi veya bakış açısını ölçmelidir.
-   - Tarihsel doğruluk esastır; kurgusal ama tarihe sadık bağlam metinleri kullanılabilir.
+   - Tarihsel doğruluk esastır; kurgusal ama tarihe sadık bağlam metinleri kullanılabilir (kaynak materyal yüklenmişse yukarıdaki zorunlu kurala uy).
 
 Lütfen çıktıyı şık ve okunaklı bir Markdown formatında, her soruyu numaralandırarak sun.
 """
@@ -220,11 +296,11 @@ with st.sidebar:
 
     soru_sayisi = st.number_input(
         "Üretilecek Soru Sayısı:",
-        min_value=1, max_value=10, value=1, step=1,
-        help="Bağlam Temelli seçiliyse, aynı bağlama dayalı en az 2 soru otomatik olarak istenir."
+        min_value=1, max_value=20, value=1, step=1,
+        help="Bağlam Temelli seçiliyse, aynı bağlama dayalı en az 5 soru otomatik olarak istenir."
     )
-    if "Bağlam Temelli" in soru_tipi and soru_sayisi < 2:
-        st.caption("ℹ️ Bağlam temelli sorularda ÖSYM/TYMM mantığı gereği aynı metne dayalı en az 2 soru istenecektir.")
+    if "Bağlam Temelli" in soru_tipi and soru_sayisi < 5:
+        st.caption("ℹ️ Bağlam temelli sorularda ÖSYM/TYMM mantığı gereği aynı metne dayalı en az 5 soru istenecektir.")
 
     st.divider()
     st.header("🏷️ Odak Kavramlar (İsteğe Bağlı)")
@@ -274,12 +350,72 @@ with col2:
 
 st.divider()
 
+# ---- Kaynak Kitap / Doküman Kütüphanesi ----
+st.subheader("📚 Kaynak Kitap / Doküman Kütüphanesi")
+st.caption("İstediğiniz kadar PDF veya metin (.txt) dosyası yükleyebilirsiniz. Birden fazla yükleme işlemiyle bir kütüphane oluşturabilir, dilediğiniz dosyayı listeden çıkarabilirsiniz. Yüklenen içerik, soru üretiminde birincil kaynak olarak kullanılır.")
+
+yeni_dosyalar = st.file_uploader(
+    "Kitap / ders notu / kaynak PDF ya da metin dosyalarını sürükleyip bırakın:",
+    type=["pdf", "txt"],
+    accept_multiple_files=True,
+    help="Taranmış (görsel) PDF'lerden metin çıkarılamayabilir; bu durumda dosyayı önce OCR'dan geçirmeniz gerekir."
+)
+
+col_yukle, col_temizle = st.columns([1, 1])
+with col_yukle:
+    if st.button("➕ Yüklenen Dosyaları Kütüphaneye Ekle", use_container_width=True, disabled=not yeni_dosyalar):
+        with st.spinner("Dosyalar işleniyor..."):
+            yeni_metin, yeni_adlar = yuklenen_dosyalari_isle(yeni_dosyalar)
+        if yeni_metin:
+            if st.session_state.kaynak_metin:
+                st.session_state.kaynak_metin += "\n\n---\n\n" + yeni_metin
+            else:
+                st.session_state.kaynak_metin = yeni_metin
+            st.session_state.kaynak_dosya_adlari.extend(yeni_adlar)
+            st.success(f"{len(yeni_adlar)} dosya kütüphaneye eklendi.")
+
+with col_temizle:
+    if st.button("🗑️ Kütüphaneyi Tamamen Temizle", use_container_width=True, disabled=not st.session_state.kaynak_dosya_adlari):
+        st.session_state.kaynak_metin = ""
+        st.session_state.kaynak_dosya_adlari = []
+        st.success("Kütüphane temizlendi.")
+
+if st.session_state.kaynak_dosya_adlari:
+    toplam_karakter = len(st.session_state.kaynak_metin)
+    st.write(f"**Kütüphanedeki dosyalar ({len(st.session_state.kaynak_dosya_adlari)} adet, toplam ~{toplam_karakter:,} karakter):**")
+    for i, ad in enumerate(st.session_state.kaynak_dosya_adlari):
+        c1, c2 = st.columns([5, 1])
+        c1.write(f"📄 {ad}")
+        if c2.button("Kaldır", key=f"kaldir_{i}"):
+            # Dosyayı kütüphaneden çıkar ve metni yeniden oluştur
+            st.session_state.kaynak_dosya_adlari.pop(i)
+            st.session_state.kaynak_metin = "\n\n---\n\n".join(
+                parca for parca in st.session_state.kaynak_metin.split("\n\n---\n\n")
+                if not parca.startswith(f"### Kaynak: {ad}")
+            )
+            st.rerun()
+
+    if toplam_karakter > MAKS_KAYNAK_KARAKTER:
+        st.warning(
+            f"Kütüphane {toplam_karakter:,} karakter içeriyor; prompt şişmesini önlemek için modele gönderilirken "
+            f"yalnızca ilk {MAKS_KAYNAK_KARAKTER:,} karakter kullanılacaktır. Çok büyük kaynaklarda, "
+            f"ilgili kısmı 'Özel Bağlam Notu' alanına özetleyerek belirtmeniz daha isabetli sonuç verir."
+        )
+
+    with st.expander("Kütüphane içeriğini önizle"):
+        st.text(st.session_state.kaynak_metin[:3000] + ("..." if len(st.session_state.kaynak_metin) > 3000 else ""))
+else:
+    st.caption("Henüz kütüphaneye dosya eklenmedi. Dosya yüklenmezse sorular genel tarih bilginizle kurgusal olarak üretilir.")
+
+st.divider()
+
 # ---- Prompt Üretme ve Gösterim Alanı ----
 st.subheader("🚀 Yapay Zeka Soru Üretim Promptu")
 
 generated_prompt = build_prompt(
     unite_secimi, kazanim_kodu, kazanim_tanimi, soru_tipi, zorluk,
-    odak_kavramlar, ek_baglam, soru_sayisi
+    odak_kavramlar, ek_baglam, soru_sayisi,
+    kaynak_metin=st.session_state.kaynak_metin[:MAKS_KAYNAK_KARAKTER]
 )
 
 st.text_area(
@@ -323,6 +459,7 @@ with col_btn3:
         "soru_sayisi": soru_sayisi,
         "odak_kavramlar": odak_kavramlar,
         "ek_baglam": ek_baglam,
+        "kaynak_dosyalar": st.session_state.kaynak_dosya_adlari,
         "prompt": generated_prompt
     }
     st.download_button(
