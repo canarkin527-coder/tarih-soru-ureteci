@@ -38,6 +38,18 @@ SORU_HAVUZU_DOSYA = SORU_HAVUZU_KLASORU / "havuz.json"
 
 ZORLUK_SECENEKLERI = ["Kolay", "Orta", "Zor"]
 
+# ------------------------------------------
+# MODEL ADLARI — TEK YERDEN YÖNETİLİR
+# Sağlayıcılar zaman zaman modelleri kullanımdan kaldırır (deprecate).
+# Bir model kapatılırsa 404 alırsınız; sadece aşağıdaki listeyi güncelleyin.
+# Güncel adlar için:
+#   Gemini: https://ai.google.dev/gemini-api/docs/models
+#   Claude: https://docs.claude.com
+# NOT: gemini-2.0-flash 1 Haziran 2026'da kapatıldı; yerine gemini-3.5-flash.
+# ------------------------------------------
+GEMINI_MODELLERI = ["gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.5-flash"]
+CLAUDE_MODELLERI = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"]
+
 # ==========================================
 # SAYFA AYARLARI
 # ==========================================
@@ -368,12 +380,12 @@ with st.sidebar:
         if not ANTHROPIC_MEVCUT:
             st.warning("`anthropic` kurulu değil: `pip install anthropic`")
         api_key = st.text_input("Anthropic API Anahtarı:", type="password")
-        model_secimi = st.selectbox("Model:", ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"])
+        model_secimi = st.selectbox("Model:", CLAUDE_MODELLERI)
     else:
         if not GEMINI_MEVCUT:
             st.warning("`google-generativeai` kurulu değil: `pip install google-generativeai`")
         api_key = st.text_input("Gemini API Anahtarı:", type="password")
-        model_secimi = st.selectbox("Model:", ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"])
+        model_secimi = st.selectbox("Model:", GEMINI_MODELLERI)
 
 
 # ==========================================
