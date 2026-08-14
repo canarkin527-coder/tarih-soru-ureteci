@@ -3,6 +3,7 @@ import json
 import time
 from datetime import datetime
 import io
+import requests
 import streamlit as st
 
 # Word Dışa Aktarımı için
@@ -19,6 +20,20 @@ try:
     PDF_MEVCUT = True
 except ImportError:
     PDF_MEVCUT = False
+
+# OpenAI SDK
+try:
+    from openai import OpenAI
+    OPENAI_MEVCUT = True
+except ImportError:
+    OPENAI_MEVCUT = False
+
+# Google Gemini SDK
+try:
+    from google import genai
+    GEMINI_MEVCUT = True
+except ImportError:
+    GEMINI_MEVCUT = False
 
 
 # ==========================================
@@ -159,38 +174,94 @@ def coklu_kayit_word(kayitlar):
 
 
 # ==========================================
-# MOCK LLM ÜRETİM FONKSİYONU
+# GERÇEK LLM ÜRETİM FONKSİYONU
 # ==========================================
 def uret_otomatik_parcali(saglayici, api_key, model, temel_parametreler, toplam_soru, ilerleme):
     """
-    LLM API çağrısını gerçekleştiren fonksiyon.
-    Gerçek API entegrasyonu (OpenAI / Google Gemini) bu blok içerisine yazılır.
+    Seçilen sağlayıcıya (DeepSeek, Google Gemini, OpenAI) dinamik API çağrısı yapar.
     """
-    ilerleme("Kaynak metin analiz ediliyor...")
-    time.sleep(0.8)
-    ilerleme(f"Bağlam temelli {toplam_soru} adet soru üretiliyor...")
-    time.sleep(1.2)
-    
-    # Örnek çıktı simülasyonu
-    ornek_cikti = f"""# {temel_parametreler['unite']} — {temel_parametreler['cikti_kod']} Soru Seti
+    ilerleme("Prompt ve kaynak metin analiz ediliyor...")
 
-**Kategori:** {temel_parametreler['soru_kategorisi']} | **Zorluk:** {temel_parametreler['zorluk']}
+    prompt_sistem = (
+        "Sen Türkiye Yüzyılı Maarif Modeli 11. Sınıf Tarih dersi müfredatına ve ÖSYM soru standartlarına son derece hakim "
+        "uzman bir tarih öğretmenisin. Sana verilen ünite, öğrenme çıktısı, süreç bileşenleri ve kaynak metne tam sadık kalarak "
+        "bağlam temelli, üst düzey düşünme becerilerini ölçen kaliteli sorular hazırlamalısın.\n"
+        "Her soru için;\n"
+        "- Soru metni / Pasaj (Bağlam)\n"
+        "- Soru kökü\n"
+        "- Seçenekler (A, B, C, D, E)\n"
+        "- Doğru Cevap ve Detaylı Çözüm / Bağlam Analizi eklemelisin."
+    )
+
+    prompt_kullanici = f"""
+### SORU ÜRETİM PARAMETRELERİ:
+- **Ünite:** {temel_parametreler['unite']}
+- **Öğrenme Çıktısı Kodu:** {temel_parametreler['cikti_kod']}
+- **Öğrenme Çıktısı Tanımı:** {temel_parametreler['cikti_tam']}
+- **Süreç Bileşenleri:** {', '.join(temel_parametreler['surec_metinleri'])}
+- **Soru Kategorisi:** {temel_parametreler['soru_kategorisi']}
+- **Zorluk Seviyesi:** {temel_parametreler['zorluk']}
+- **İstenen Soru Sayısı:** {toplam_soru}
+- **Ek Talimatlar:** {temel_parametreler.get('ek_baglam', 'Yok')}
 
 ---
+### KULLANILACAK KAYNAK METİN / KÜTÜPHANE:
+{temel_parametreler.get('kaynak_metin', 'Özel kaynak bulunmuyor, genel 11. Sınıf TYMM Tarih müfredatına göre üret.')}
+---
 
-### Soru 1
-19. yüzyıl Osmanlı Devleti'nde meydana gelen idari ve hukuki düzenlemeler dikkate alındığında...
-
-**A)** Yalnız I  
-**B)** Yalnız II  
-**C)** I ve II  
-**D)** II ve III  
-**E)** I, II ve III  
-
-**Cevap:** C  
-**Çözüm / Bağlam Analizi:** Metindeki maddeler incelendiğinde merkezi otoritenin güçlendirilmesi hedeflenmiştir.
+Lütfen yukarıdaki parametrelere ve kaynak metne uygun olarak tam {toplam_soru} adet orijinal soru üret.
 """
-    return ornek_cikti
+
+    ilerleme(f"{saglayici} ({model}) modeli ile sorular üretiliyor...")
+
+    # 1. DEEPSEEK API ÇAĞRISI
+    if saglayici == "DeepSeek":
+        url = "https://api.deepseek.com/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": prompt_sistem},
+                {"role": "user", "content": prompt_kullanici}
+            ],
+            "stream": False
+        }
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"]
+        else:
+            raise Exception(f"DeepSeek API Hatası ({response.status_code}): {response.text}")
+
+    # 2. GOOGLE GEMINI API ÇAĞRISI
+    elif saglayici == "Google Gemini":
+        if not GEMINI_MEVCUT:
+            raise Exception("`google-genai` kütüphanesi kurulu değil. `pip install google-genai` komutunu çalıştırın.")
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=model,
+            contents=f"{prompt_sistem}\n\n{prompt_kullanici}"
+        )
+        return response.text
+
+    # 3. OPENAI API ÇAĞRISI
+    elif saglayici == "OpenAI":
+        if not OPENAI_MEVCUT:
+            raise Exception("`openai` kütüphanesi kurulu değil. `pip install openai` komutunu çalıştırın.")
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": prompt_sistem},
+                {"role": "user", "content": prompt_kullanici}
+            ]
+        )
+        return response.choices[0].message.content
+
+    else:
+        raise Exception("Geçersiz sağlayıcı seçimi!")
 
 
 # ==========================================
@@ -199,8 +270,15 @@ def uret_otomatik_parcali(saglayici, api_key, model, temel_parametreler, toplam_
 with st.sidebar:
     st.title("⚙️ Üretim Parametreleri")
     
-    saglayici = st.selectbox("LLM Sağlayıcı:", ["Google Gemini", "OpenAI"])
-    model_secimi = st.selectbox("Model:", ["gemini-1.5-pro", "gpt-4o"] if saglayici == "OpenAI" else ["gemini-1.5-pro", "gemini-1.5-flash"])
+    saglayici = st.selectbox("LLM Sağlayıcı:", ["DeepSeek", "Google Gemini", "OpenAI"])
+    
+    if saglayici == "DeepSeek":
+        model_secimi = st.selectbox("Model:", ["deepseek-chat", "deepseek-coder"])
+    elif saglayici == "Google Gemini":
+        model_secimi = st.selectbox("Model:", ["gemini-1.5-pro", "gemini-1.5-flash"])
+    else:
+        model_secimi = st.selectbox("Model:", ["gpt-4o", "gpt-4o-mini"])
+
     api_key = st.text_input("API Anahtarı:", type="password")
     
     st.divider()
