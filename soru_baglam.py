@@ -366,14 +366,24 @@ def soru_uret_gemini(api_key, model, prompt, max_deneme=3, ilerleme=None):
 
 
 def soru_uret_deepseek(api_key, model, prompt, max_deneme=3, ilerleme=None):
-    """DeepSeek ile üretim (OpenAI-uyumlu API). Yoğunluk/geçici hata durumunda yeniden dener."""
+    """DeepSeek ile üretim (OpenAI-uyumlu API, deepseek-v4-flash / v4-pro).
+    MALİYET NOTU:
+      - Standart chat.completions çağrısı v4-flash'ı DÜŞÜNMEYEN (non-thinking) modda
+        kullanır; pahalı 'reasoning token' üretilmez. (12 sentlik yüksek harcamanın
+        sebebi genelde düşünme modu ya da çok büyük girdidir.)
+      - max_tokens bir TAVANDIR, harcama değildir; yalnızca gerçekten üretilen token
+        faturalanır. Parça başına 5 soru üretildiği için 4000 fazlasıyla yeterli ve
+        kontrolden çıkan uzun üretimi engeller.
+      - En düşük maliyet için model olarak 'deepseek-v4-flash' seçin ('-pro' ~3x pahalı).
+    """
     client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL)
     for deneme in range(max_deneme):
         try:
             response = client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=16000,
+                max_tokens=4000,
+                temperature=0.7,
             )
             metin = response.choices[0].message.content or ""
             try:
@@ -508,6 +518,72 @@ Aşağıda TAM OLARAK belirtilen ünite, öğrenme çıktısı ve süreç bileş
 
 
 # ==========================================
+# ÜRETİM DAĞITICI — OTOMATİK PARÇALAMA (token sınırına takılmamak için)
+# ==========================================
+
+# Bağlam temelli sorularda tek bir istekte güvenle üretilebilecek azami soru.
+# Bunu aşan istekler otomatik olarak parçalara bölünür ve birleştirilir.
+PARTI_BOYUTU = 5
+
+
+def _tek_cagri(saglayici, api_key, model, prompt, ilerleme=None):
+    """Seçili sağlayıcıya tek bir üretim isteği gönderir."""
+    if saglayici == "Anthropic (Claude)":
+        return soru_uret_api(api_key, model, prompt, ilerleme=ilerleme)
+    elif saglayici == "Google (Gemini)":
+        return soru_uret_gemini(api_key, model, prompt, ilerleme=ilerleme)
+    else:  # DeepSeek
+        return soru_uret_deepseek(api_key, model, prompt, ilerleme=ilerleme)
+
+
+def uret_otomatik_parcali(saglayici, api_key, model, temel_parametreler,
+                          toplam_soru, ilerleme=None):
+    """
+    İstenen toplam soru sayısını, token sınırına takılmamak için PARTI_BOYUTU'luk
+    gruplara bölerek üretir ve birleştirir. Böylece 5'ten fazla soru istendiğinde
+    bile yanıt yarım kalmaz.
+
+    temel_parametreler: build_prompt'a verilecek sabit argümanlar (soru_sayisi HARİÇ).
+    """
+    if toplam_soru <= PARTI_BOYUTU:
+        prompt = build_prompt(**temel_parametreler, soru_sayisi=toplam_soru)
+        return _tek_cagri(saglayici, api_key, model, prompt, ilerleme)
+
+    # Parçalara böl: örn. 12 soru -> [5, 5, 2]
+    partiler = []
+    kalan = toplam_soru
+    while kalan > 0:
+        partiler.append(min(PARTI_BOYUTU, kalan))
+        kalan -= PARTI_BOYUTU
+
+    baglam_temelli = (temel_parametreler.get("soru_kategorisi") == "Bağlam Temelli")
+    parcalar = []
+    uretilen = 0
+    for i, adet in enumerate(partiler, 1):
+        if ilerleme:
+            ilerleme(f"Bölüm {i}/{len(partiler)} üretiliyor "
+                     f"({uretilen + 1}-{uretilen + adet}. sorular)...")
+        ek = temel_parametreler.get("ek_baglam", "") or ""
+        # Parçalar arası tekrarı azaltmak için küçük bir yönlendirme ekle
+        if i > 1:
+            ek = (ek + " " if ek else "") + \
+                 (f"NOT: Bu, aynı çıktı için üretilen {i}. gruptur. "
+                  f"Önceki gruplardaki soru/bağlamları TEKRAR ETME; farklı olay, "
+                  f"kişi, antlaşma ve bakış açıları kullan.")
+        p = {k: v for k, v in temel_parametreler.items() if k != "ek_baglam"}
+        prompt = build_prompt(**p, soru_sayisi=adet, ek_baglam=ek)
+        parca = _tek_cagri(saglayici, api_key, model, prompt, ilerleme)
+
+        # Bağlam temelli setlerde her parçaya ayrı bir başlık koy (okunabilirlik)
+        if baglam_temelli and len(partiler) > 1:
+            parca = f"\n\n## 📚 Bağlam Grubu {i}\n\n{parca}"
+        parcalar.append(parca.strip())
+        uretilen += adet
+
+    return "\n\n---\n\n".join(parcalar)
+
+
+# ==========================================
 # OTURUM DURUMU
 # ==========================================
 if "uretilen_soru" not in st.session_state:
@@ -602,7 +678,10 @@ with st.sidebar:
         api_key = st.text_input("DeepSeek API Anahtarı:", type="password",
                                 help="platform.deepseek.com üzerinden alınır. Katı dakikalık istek limiti yoktur ve çok ucuzdur.")
         model_secimi = st.selectbox("Model:", DEEPSEEK_MODELLERI)
-        st.caption("💡 DeepSeek'te dakikalık istek kotası yoktur; büyük taramalar için uygundur.")
+        st.caption("💡 En ucuz seçim **deepseek-v4-flash**'tır (v4-pro ~3 kat pahalı). "
+                   "Dakikalık istek kotası yoktur. Aynı kaynağı tekrar gönderdiğinizde "
+                   "DeepSeek önbelleği (cache) girdi maliyetini ~%98 düşürür; bu yüzden "
+                   "kaynak kütüphanesini sabit tutmak ucuzdur.")
 
 
 # ==========================================
@@ -706,14 +785,24 @@ st.divider()
 st.subheader("🚀 Soru Üretimi")
 
 if surec_secimi:
-    generated_prompt = build_prompt(
-        unite_secimi, cikti_kod, cikti_tam, surec_secimi, soru_kategorisi,
-        zorluk, soru_sayisi,
+    temel_parametreler = dict(
+        unite=unite_secimi, cikti_kod=cikti_kod, cikti_tam=cikti_tam,
+        surec_metinleri=surec_secimi, soru_kategorisi=soru_kategorisi,
+        zorluk=zorluk,
         kaynak_metin=st.session_state.kaynak_metin[:maks_kaynak_karakter],
         ek_baglam=ek_baglam
     )
+    # Önizleme: tek partilik örnek prompt (gerçek üretim otomatik parçalanır)
+    onizleme_adet = min(soru_sayisi, PARTI_BOYUTU)
+    generated_prompt = build_prompt(**temel_parametreler, soru_sayisi=onizleme_adet)
 else:
+    temel_parametreler = None
     generated_prompt = "⚠️ Lütfen sol menüden en az bir süreç bileşeni (alt başlık) seçin."
+
+if surec_secimi and soru_sayisi > PARTI_BOYUTU:
+    st.caption(f"ℹ️ {soru_sayisi} soru, token sınırına takılmamak için otomatik olarak "
+               f"{PARTI_BOYUTU}'erli gruplar hâlinde üretilip birleştirilecek. "
+               f"(Aşağıdaki önizleme tek bir grubu gösterir.)")
 
 with st.expander("🔍 Oluşturulan promptu görüntüle / kopyala"):
     st.text_area("Prompt:", value=generated_prompt, height=300)
@@ -752,12 +841,10 @@ if uret_tiklandi:
             durum.update(label=msg, state="running")
 
         try:
-            if saglayici == "Anthropic (Claude)":
-                sonuc = soru_uret_api(api_key, model_secimi, generated_prompt, ilerleme=ilerleme_bildir)
-            elif saglayici == "Google (Gemini)":
-                sonuc = soru_uret_gemini(api_key, model_secimi, generated_prompt, ilerleme=ilerleme_bildir)
-            else:  # DeepSeek
-                sonuc = soru_uret_deepseek(api_key, model_secimi, generated_prompt, ilerleme=ilerleme_bildir)
+            sonuc = uret_otomatik_parcali(
+                saglayici, api_key, model_secimi,
+                temel_parametreler, soru_sayisi, ilerleme=ilerleme_bildir
+            )
             durum.update(label="Üretim tamamlandı.", state="complete")
             st.session_state.uretilen_soru = sonuc
             st.session_state.son_uretim_meta = {
