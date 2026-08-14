@@ -35,6 +35,12 @@ try:
 except ImportError:
     DOCX_MEVCUT = False
 
+try:
+    from openai import OpenAI  # DeepSeek OpenAI-uyumlu API kullanır
+    OPENAI_MEVCUT = True
+except ImportError:
+    OPENAI_MEVCUT = False
+
 # ==========================================
 # SABİTLER VE KLASÖRLER
 # ==========================================
@@ -59,6 +65,10 @@ ZORLUK_SECENEKLERI = ["Kolay", "Orta", "Zor"]
 # ------------------------------------------
 GEMINI_MODELLERI = ["gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.5-flash"]
 CLAUDE_MODELLERI = ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"]
+# DeepSeek OpenAI-uyumlu API kullanır. Katı dakikalık istek limiti yoktur, çok ucuzdur.
+# Model adları için: https://api-docs.deepseek.com  (eski deepseek-chat/reasoner emekli oldu)
+DEEPSEEK_MODELLERI = ["deepseek-v4-flash", "deepseek-v4-pro"]
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 # ==========================================
 # SAYFA AYARLARI
@@ -355,9 +365,36 @@ def soru_uret_gemini(api_key, model, prompt, max_deneme=3, ilerleme=None):
     raise RuntimeError("Kota limiti nedeniyle üretim başarısız oldu. Lütfen biraz sonra tekrar deneyin.")
 
 
-# ==========================================
-# PROMPT OLUŞTURUCU
-# ==========================================
+def soru_uret_deepseek(api_key, model, prompt, max_deneme=3, ilerleme=None):
+    """DeepSeek ile üretim (OpenAI-uyumlu API). Yoğunluk/geçici hata durumunda yeniden dener."""
+    client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL)
+    for deneme in range(max_deneme):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=8000,
+            )
+            metin = response.choices[0].message.content or ""
+            try:
+                if response.choices[0].finish_reason == "length":
+                    metin += "\n\n---\n⚠️ **UYARI:** Yanıt token sınırına takılıp yarım kalmış olabilir. Soru sayısını azaltıp tekrar deneyin."
+            except (IndexError, AttributeError):
+                pass
+            return metin
+        except Exception as e:
+            mesaj = str(e)
+            gecici = ("429" in mesaj or "rate" in mesaj.lower() or "503" in mesaj
+                      or "overload" in mesaj.lower() or "timeout" in mesaj.lower())
+            if gecici and deneme < max_deneme - 1:
+                bekleme = _bekleme_suresi_bul(mesaj, varsayilan=20)
+                if ilerleme:
+                    ilerleme(f"DeepSeek yoğunluk/limit — {bekleme} sn beklenip tekrar denenecek "
+                             f"({deneme + 1}/{max_deneme - 1})...")
+                time.sleep(bekleme)
+                continue
+            raise
+    raise RuntimeError("DeepSeek üretimi başarısız oldu. Lütfen biraz sonra tekrar deneyin.")
 
 def build_prompt(unite, cikti_kod, cikti_tam, surec_metinleri, soru_kategorisi,
                  zorluk, soru_sayisi, kaynak_metin="", ek_baglam=""):
@@ -545,18 +582,27 @@ with st.sidebar:
 
     st.divider()
     st.header("🤖 AI ile Üretim")
-    saglayici = st.radio("Sağlayıcı:", ["Anthropic (Claude)", "Google (Gemini)"], horizontal=True)
+    saglayici = st.radio("Sağlayıcı:",
+                         ["Anthropic (Claude)", "Google (Gemini)", "DeepSeek"],
+                         horizontal=True)
 
     if saglayici == "Anthropic (Claude)":
         if not ANTHROPIC_MEVCUT:
             st.warning("`anthropic` kurulu değil: `pip install anthropic`")
         api_key = st.text_input("Anthropic API Anahtarı:", type="password")
         model_secimi = st.selectbox("Model:", CLAUDE_MODELLERI)
-    else:
+    elif saglayici == "Google (Gemini)":
         if not GEMINI_MEVCUT:
             st.warning("`google-generativeai` kurulu değil: `pip install google-generativeai`")
         api_key = st.text_input("Gemini API Anahtarı:", type="password")
         model_secimi = st.selectbox("Model:", GEMINI_MODELLERI)
+    else:  # DeepSeek
+        if not OPENAI_MEVCUT:
+            st.warning("`openai` kurulu değil: `pip install openai`")
+        api_key = st.text_input("DeepSeek API Anahtarı:", type="password",
+                                help="platform.deepseek.com üzerinden alınır. Katı dakikalık istek limiti yoktur ve çok ucuzdur.")
+        model_secimi = st.selectbox("Model:", DEEPSEEK_MODELLERI)
+        st.caption("💡 DeepSeek'te dakikalık istek kotası yoktur; büyük taramalar için uygundur.")
 
 
 # ==========================================
@@ -676,7 +722,7 @@ b0, b1, b2 = st.columns(3)
 with b0:
     uret_tiklandi = st.button(
         "✨ Soruyu Şimdi Üret", use_container_width=True, type="primary",
-        disabled=not (surec_secimi and (ANTHROPIC_MEVCUT or GEMINI_MEVCUT))
+        disabled=not (surec_secimi and (ANTHROPIC_MEVCUT or GEMINI_MEVCUT or OPENAI_MEVCUT))
     )
 with b1:
     st.download_button("⬇️ Promptu İndir (.txt)", data=generated_prompt,
@@ -695,6 +741,8 @@ if uret_tiklandi:
         st.error("`anthropic` kurulu değil.")
     elif saglayici == "Google (Gemini)" and not GEMINI_MEVCUT:
         st.error("`google-generativeai` kurulu değil.")
+    elif saglayici == "DeepSeek" and not OPENAI_MEVCUT:
+        st.error("`openai` kurulu değil. `pip install openai` çalıştırın.")
     elif not api_key:
         st.error(f"Lütfen {saglayici} API anahtarınızı girin.")
     else:
@@ -706,8 +754,10 @@ if uret_tiklandi:
         try:
             if saglayici == "Anthropic (Claude)":
                 sonuc = soru_uret_api(api_key, model_secimi, generated_prompt, ilerleme=ilerleme_bildir)
-            else:
+            elif saglayici == "Google (Gemini)":
                 sonuc = soru_uret_gemini(api_key, model_secimi, generated_prompt, ilerleme=ilerleme_bildir)
+            else:  # DeepSeek
+                sonuc = soru_uret_deepseek(api_key, model_secimi, generated_prompt, ilerleme=ilerleme_bildir)
             durum.update(label="Üretim tamamlandı.", state="complete")
             st.session_state.uretilen_soru = sonuc
             st.session_state.son_uretim_meta = {
