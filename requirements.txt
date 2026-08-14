@@ -3,3 +3,4 @@ anthropic>=0.34
 pypdf>=4.0
 google-generativeai>=0.8
 python-docx
+openai
