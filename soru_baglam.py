@@ -373,7 +373,7 @@ def soru_uret_deepseek(api_key, model, prompt, max_deneme=3, ilerleme=None):
             response = client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=8000,
+                max_tokens=16000,
             )
             metin = response.choices[0].message.content or ""
             try:
