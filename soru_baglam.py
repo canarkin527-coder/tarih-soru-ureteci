@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 import streamlit as st
 import json
+import io
+import re
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -24,6 +27,13 @@ try:
     PYPDF_MEVCUT = True
 except ImportError:
     PYPDF_MEVCUT = False
+
+try:
+    from docx import Document
+    from docx.shared import Pt
+    DOCX_MEVCUT = True
+except ImportError:
+    DOCX_MEVCUT = False
 
 # ==========================================
 # SABİTLER VE KLASÖRLER
@@ -156,34 +166,193 @@ def havuzdan_sil(kayit_id):
 
 
 # ==========================================
+# YARDIMCI — WORD (.docx) DIŞA AKTARMA
+# ==========================================
+
+def _markdown_run_ekle(paragraf, satir):
+    """Bir satırdaki **kalın** parçaları Word run'larına çevirir."""
+    for parca in re.split(r'(\*\*.+?\*\*)', satir):
+        if not parca:
+            continue
+        if parca.startswith("**") and parca.endswith("**") and len(parca) > 4:
+            paragraf.add_run(parca[2:-2]).bold = True
+        else:
+            paragraf.add_run(parca)
+
+
+def _markdown_word_ekle(dokuman, markdown_metin):
+    """Markdown içeriği (soru metni) Word paragraflarına dönüştürür.
+       Başlık (#), madde/numaralı liste, kalın (**) ve yatay çizgi desteklenir."""
+    for ham in (markdown_metin or "").split("\n"):
+        satir = ham.rstrip()
+        if not satir.strip():
+            continue
+        if satir.strip() in ("---", "***", "___"):
+            continue
+        baslik_esle = re.match(r'^(#{1,6})\s+(.*)', satir)
+        if baslik_esle:
+            seviye = min(len(baslik_esle.group(1)), 4)
+            dokuman.add_heading(baslik_esle.group(2).strip(), level=seviye)
+            continue
+        madde_esle = re.match(r'^\s*[-*+]\s+(.*)', satir)
+        if madde_esle:
+            p = dokuman.add_paragraph(style="List Bullet")
+            _markdown_run_ekle(p, madde_esle.group(1))
+            continue
+        num_esle = re.match(r'^\s*(\d+)[\.\)]\s+(.*)', satir)
+        if num_esle:
+            p = dokuman.add_paragraph(style="List Number")
+            _markdown_run_ekle(p, num_esle.group(2))
+            continue
+        p = dokuman.add_paragraph()
+        _markdown_run_ekle(p, satir)
+
+
+def _kayit_word_ekle(dokuman, kayit):
+    """Tek bir havuz kaydını (meta + içerik) belgeye ekler."""
+    parcalar = [kayit.get("cikti_kod", ""), kayit.get("soru_kategorisi", ""),
+                kayit.get("zorluk", "")]
+    if kayit.get("soru_sayisi"):
+        parcalar.append(f"{kayit.get('soru_sayisi')} soru")
+    bilgi = " · ".join(str(x) for x in parcalar if str(x).strip())
+    dokuman.add_heading(bilgi or "Soru Kaydı", level=1)
+
+    for etiket, anahtar in (("Ünite", "unite"), ("Öğrenme Çıktısı", "cikti_tam")):
+        deger = kayit.get(anahtar, "")
+        if deger:
+            p = dokuman.add_paragraph()
+            p.add_run(f"{etiket}: ").bold = True
+            p.add_run(str(deger))
+    if kayit.get("surecler"):
+        p = dokuman.add_paragraph()
+        p.add_run("Alt başlıklar: ").bold = True
+        p.add_run("; ".join(kayit["surecler"]))
+    alt = []
+    if kayit.get("model"):
+        alt.append(f"Model: {kayit['model']}")
+    if kayit.get("zaman"):
+        alt.append(f"Üretim: {kayit['zaman']}")
+    if alt:
+        p = dokuman.add_paragraph()
+        p.add_run(" · ".join(alt)).italic = True
+
+    dokuman.add_paragraph()
+    _markdown_word_ekle(dokuman, kayit.get("icerik", ""))
+
+
+def tek_kayit_word(kayit):
+    """Tek kaydı Word belgesine çevirir; BytesIO döner."""
+    dokuman = Document()
+    dokuman.add_heading("TYMM 11. Sınıf Tarih — Soru", level=0)
+    _kayit_word_ekle(dokuman, kayit)
+    tampon = io.BytesIO()
+    dokuman.save(tampon)
+    tampon.seek(0)
+    return tampon
+
+
+def coklu_kayit_word(kayitlar, baslik="TYMM 11. Sınıf Tarih — Soru Havuzu"):
+    """Birden çok kaydı tek Word belgesinde toplar; her kayıt yeni sayfada."""
+    dokuman = Document()
+    dokuman.add_heading(baslik, level=0)
+    dokuman.add_paragraph(
+        f"Toplam {len(kayitlar)} kayıt · Dışa aktarma: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    )
+    for i, kayit in enumerate(kayitlar):
+        if i > 0:
+            dokuman.add_page_break()
+        _kayit_word_ekle(dokuman, kayit)
+    tampon = io.BytesIO()
+    dokuman.save(tampon)
+    tampon.seek(0)
+    return tampon
+
+
+def ham_metin_word(markdown_metin, baslik="TYMM 11. Sınıf Tarih — Üretilen Sorular", ust_bilgi=None):
+    """Serbest Markdown metni (henüz havuza kaydedilmemiş üretim) Word'e çevirir."""
+    dokuman = Document()
+    dokuman.add_heading(baslik, level=0)
+    if ust_bilgi:
+        p = dokuman.add_paragraph()
+        p.add_run(ust_bilgi).italic = True
+        dokuman.add_paragraph()
+    _markdown_word_ekle(dokuman, markdown_metin)
+    tampon = io.BytesIO()
+    dokuman.save(tampon)
+    tampon.seek(0)
+    return tampon
+
+
+# ==========================================
 # YARDIMCI — AI ÇAĞRILARI
 # ==========================================
 
-def soru_uret_api(api_key, model, prompt):
+def _bekleme_suresi_bul(mesaj, varsayilan=35):
+    """429 hata metnindeki retry_delay saniyesini yakalar; yoksa varsayılanı döner."""
+    eslesme = re.search(r'retry.{0,25}?(\d+)', mesaj, re.IGNORECASE | re.DOTALL)
+    if eslesme:
+        try:
+            return int(eslesme.group(1)) + 2
+        except ValueError:
+            pass
+    return varsayilan
+
+
+def soru_uret_api(api_key, model, prompt, max_deneme=3, ilerleme=None):
+    """Claude ile üretim. 429/aşırı yük (overloaded) durumunda otomatik yeniden dener."""
     client = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model=model, max_tokens=16000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    metin = "\n".join(b.text for b in response.content if b.type == "text")
-    if response.stop_reason == "max_tokens":
-        metin += "\n\n---\n⚠️ **UYARI:** Yanıt token sınırına takılıp yarım kalmış olabilir. Soru sayısını azaltıp tekrar deneyin."
-    return metin
+    for deneme in range(max_deneme):
+        try:
+            response = client.messages.create(
+                model=model, max_tokens=16000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            metin = "\n".join(b.text for b in response.content if b.type == "text")
+            if response.stop_reason == "max_tokens":
+                metin += "\n\n---\n⚠️ **UYARI:** Yanıt token sınırına takılıp yarım kalmış olabilir. Soru sayısını azaltıp tekrar deneyin."
+            return metin
+        except Exception as e:
+            mesaj = str(e)
+            gecici = ("429" in mesaj or "rate_limit" in mesaj.lower()
+                      or "overloaded" in mesaj.lower() or "529" in mesaj)
+            if gecici and deneme < max_deneme - 1:
+                bekleme = _bekleme_suresi_bul(mesaj)
+                if ilerleme:
+                    ilerleme(f"Kota/yoğunluk limiti — {bekleme} sn beklenip tekrar denenecek "
+                             f"({deneme + 1}/{max_deneme - 1})...")
+                time.sleep(bekleme)
+                continue
+            raise
+    raise RuntimeError("Kota limiti nedeniyle üretim başarısız oldu. Lütfen biraz sonra tekrar deneyin.")
 
 
-def soru_uret_gemini(api_key, model, prompt):
+def soru_uret_gemini(api_key, model, prompt, max_deneme=3, ilerleme=None):
+    """Gemini ile üretim. 429 kota durumunda retry_delay kadar bekleyip otomatik yeniden dener."""
     genai.configure(api_key=api_key)
     model_obj = genai.GenerativeModel(model)
-    response = model_obj.generate_content(
-        prompt, generation_config=genai.types.GenerationConfig(max_output_tokens=16000)
-    )
-    metin = response.text
-    try:
-        if response.candidates[0].finish_reason == 2:
-            metin += "\n\n---\n⚠️ **UYARI:** Yanıt token sınırına takılıp yarım kalmış olabilir. Soru sayısını azaltıp tekrar deneyin."
-    except (IndexError, AttributeError):
-        pass
-    return metin
+    for deneme in range(max_deneme):
+        try:
+            response = model_obj.generate_content(
+                prompt, generation_config=genai.types.GenerationConfig(max_output_tokens=16000)
+            )
+            metin = response.text
+            try:
+                if response.candidates[0].finish_reason == 2:
+                    metin += "\n\n---\n⚠️ **UYARI:** Yanıt token sınırına takılıp yarım kalmış olabilir. Soru sayısını azaltıp tekrar deneyin."
+            except (IndexError, AttributeError):
+                pass
+            return metin
+        except Exception as e:
+            mesaj = str(e)
+            if ("429" in mesaj or "quota" in mesaj.lower() or "rate" in mesaj.lower()) and deneme < max_deneme - 1:
+                bekleme = _bekleme_suresi_bul(mesaj)
+                if ilerleme:
+                    ilerleme(f"Gemini kota limiti — {bekleme} sn beklenip tekrar denenecek "
+                             f"({deneme + 1}/{max_deneme - 1})...")
+                time.sleep(bekleme)
+                continue
+            raise
+    raise RuntimeError("Kota limiti nedeniyle üretim başarısız oldu. Lütfen biraz sonra tekrar deneyin.")
 
 
 # ==========================================
@@ -320,6 +489,8 @@ if "kutuphane_yuklendi" not in st.session_state:
 # ==========================================
 st.title("🏛️ TYMM 11. Sınıf Tarih Soru Üreteci")
 st.markdown("**Türkiye Yüzyılı Maarif Modeli** müfredatına birebir bağlı, kademeli seçimli soru üretimi ve soru havuzu.")
+if not DOCX_MEVCUT:
+    st.warning("Word (.docx) indirme için `python-docx` gerekli: `pip install python-docx`")
 st.divider()
 
 # ==========================================
@@ -443,8 +614,12 @@ st.caption(f"📁 Kayıt yeri: `{KUTUPHANE_KLASORU}`")
 maks_kaynak_karakter = st.slider(
     "Modele gönderilecek azami kaynak metni (karakter):",
     min_value=20000, max_value=800000, value=MAKS_KAYNAK_KARAKTER_VARSAYILAN, step=10000,
-    help="1 token ≈ 4 karakter. Yüksek değerler API maliyetini ve süreyi artırır."
+    help="1 token ≈ 4 karakter. Yüksek değerler API maliyetini/süreyi artırır ve "
+         "ücretsiz katmanda dakikalık token kotasını (429 hatası) hızla doldurur."
 )
+if maks_kaynak_karakter > 200000:
+    st.caption("⚠️ Yüksek kaynak metni ücretsiz katmanda '429 kota aşımı' hatasına yol açabilir. "
+               "Sık hata alıyorsanız bu değeri 40.000–60.000 aralığına düşürün.")
 
 cy, ct = st.columns(2)
 with cy:
@@ -523,33 +698,44 @@ if uret_tiklandi:
     elif not api_key:
         st.error(f"Lütfen {saglayici} API anahtarınızı girin.")
     else:
-        with st.spinner("Soru üretiliyor..."):
-            try:
-                if saglayici == "Anthropic (Claude)":
-                    sonuc = soru_uret_api(api_key, model_secimi, generated_prompt)
-                else:
-                    sonuc = soru_uret_gemini(api_key, model_secimi, generated_prompt)
-                st.session_state.uretilen_soru = sonuc
-                st.session_state.son_uretim_meta = {
-                    "unite": unite_secimi, "cikti_kod": cikti_kod, "cikti_tam": cikti_tam,
-                    "surecler": surec_secimi, "soru_kategorisi": soru_kategorisi,
-                    "zorluk": zorluk, "soru_sayisi": soru_sayisi,
-                    "model": model_secimi, "zaman": datetime.now().strftime("%Y-%m-%d %H:%M")
-                }
-            except Exception as e:
-                if ANTHROPIC_MEVCUT and isinstance(e, anthropic.AuthenticationError):
-                    st.error("API anahtarı geçersiz görünüyor.")
-                else:
-                    st.error(f"Hata oluştu: {e}")
+        durum = st.status("Soru üretiliyor...", expanded=False)
+
+        def ilerleme_bildir(msg):
+            durum.update(label=msg, state="running")
+
+        try:
+            if saglayici == "Anthropic (Claude)":
+                sonuc = soru_uret_api(api_key, model_secimi, generated_prompt, ilerleme=ilerleme_bildir)
+            else:
+                sonuc = soru_uret_gemini(api_key, model_secimi, generated_prompt, ilerleme=ilerleme_bildir)
+            durum.update(label="Üretim tamamlandı.", state="complete")
+            st.session_state.uretilen_soru = sonuc
+            st.session_state.son_uretim_meta = {
+                "unite": unite_secimi, "cikti_kod": cikti_kod, "cikti_tam": cikti_tam,
+                "surecler": surec_secimi, "soru_kategorisi": soru_kategorisi,
+                "zorluk": zorluk, "soru_sayisi": soru_sayisi,
+                "model": model_secimi, "zaman": datetime.now().strftime("%Y-%m-%d %H:%M")
+            }
+        except Exception as e:
+            durum.update(label="Üretim başarısız.", state="error")
+            mesaj = str(e)
+            if ANTHROPIC_MEVCUT and isinstance(e, anthropic.AuthenticationError):
+                st.error("API anahtarı geçersiz görünüyor.")
+            elif "429" in mesaj or "quota" in mesaj.lower() or "rate" in mesaj.lower():
+                st.error("⏳ Kota/hız limiti aşıldı ve otomatik denemeler de yetmedi. "
+                         "Birkaç dakika bekleyip tekrar deneyin. İpucu: kaynak metni sınırını "
+                         "düşürmek (yandaki kaydırıcı) veya soru sayısını azaltmak limiti korur.")
+            else:
+                st.error(f"Hata oluştu: {e}")
 
 if st.session_state.uretilen_soru:
     st.divider()
     st.subheader("📄 Üretilen Soru(lar)")
     st.markdown(st.session_state.uretilen_soru)
 
-    k1, k2 = st.columns(2)
+    k1, k2, k3 = st.columns(3)
     with k1:
-        if st.button("💾 Bu Soruları Soru Havuzuna Kaydet", use_container_width=True, type="primary"):
+        if st.button("💾 Soru Havuzuna Kaydet", use_container_width=True, type="primary"):
             meta = st.session_state.son_uretim_meta or {}
             kayit = {
                 "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
@@ -567,8 +753,23 @@ if st.session_state.uretilen_soru:
             havuza_kaydet(kayit)
             st.success("Soru havuzuna kaydedildi! Aşağıdaki havuzdan erişebilirsiniz.")
     with k2:
-        st.download_button("⬇️ Bu Soruları İndir (.md)", data=st.session_state.uretilen_soru,
+        st.download_button("⬇️ İndir (.md)", data=st.session_state.uretilen_soru,
                            file_name=f"sorular_{cikti_kod}_{zorluk}.md", mime="text/markdown", use_container_width=True)
+    with k3:
+        if DOCX_MEVCUT:
+            meta = st.session_state.son_uretim_meta or {}
+            ust = " · ".join(str(x) for x in [meta.get("cikti_kod", ""), meta.get("soru_kategorisi", ""),
+                                              meta.get("zorluk", ""), meta.get("zaman", "")] if str(x).strip())
+            word_tampon = ham_metin_word(st.session_state.uretilen_soru, ust_bilgi=ust)
+            st.download_button(
+                "⬇️ Word İndir (.docx)", data=word_tampon,
+                file_name=f"sorular_{cikti_kod}_{zorluk}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True
+            )
+        else:
+            st.button("⬇️ Word (.docx)", disabled=True, use_container_width=True,
+                      help="python-docx kurulu değil")
 
 st.divider()
 
@@ -602,11 +803,38 @@ else:
 
     st.write(f"**{len(filtreli)} / {len(havuz)} kayıt gösteriliyor.**")
 
-    st.download_button(
-        "⬇️ Tüm Havuzu Dışa Aktar (.json)",
-        data=json.dumps(havuz, ensure_ascii=False, indent=2),
-        file_name="soru_havuzu.json", mime="application/json"
-    )
+    # --- Toplu dışa aktarma butonları ---
+    d_json, d_word_filt, d_word_tum = st.columns(3)
+    with d_json:
+        st.download_button(
+            "⬇️ Tüm Havuz (.json)",
+            data=json.dumps(havuz, ensure_ascii=False, indent=2),
+            file_name="soru_havuzu.json", mime="application/json", use_container_width=True
+        )
+    with d_word_filt:
+        if DOCX_MEVCUT and filtreli:
+            st.download_button(
+                f"⬇️ Filtreli → Word ({len(filtreli)})",
+                data=coklu_kayit_word(filtreli, baslik="TYMM Tarih — Seçili Sorular"),
+                file_name="sorular_filtreli.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True
+            )
+        else:
+            st.button("⬇️ Filtreli → Word", disabled=True, use_container_width=True,
+                      help="python-docx kurulu değil veya kayıt yok")
+    with d_word_tum:
+        if DOCX_MEVCUT and havuz:
+            st.download_button(
+                f"⬇️ Tüm Havuz → Word ({len(havuz)})",
+                data=coklu_kayit_word(havuz, baslik="TYMM Tarih — Tüm Soru Havuzu"),
+                file_name="soru_havuzu_tamami.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True
+            )
+        else:
+            st.button("⬇️ Tüm Havuz → Word", disabled=True, use_container_width=True,
+                      help="python-docx kurulu değil")
 
     for kayit in filtreli:
         baslik = f"📘 {kayit.get('cikti_kod','')} · {kayit.get('soru_kategorisi','')} · {kayit.get('zorluk','')} · {kayit.get('soru_sayisi','')} soru · {kayit.get('zaman','')}"
@@ -617,12 +845,23 @@ else:
                 st.caption("**Alt başlıklar:** " + "; ".join(kayit["surecler"]))
             st.markdown("---")
             st.markdown(kayit.get("icerik", ""))
-            d1, d2 = st.columns([1, 5])
+            d1, d2, d3 = st.columns([1, 1, 4])
             with d1:
                 st.download_button("⬇️ .md", data=kayit.get("icerik", ""),
                                    file_name=f"soru_{kayit.get('cikti_kod','')}_{kayit.get('id','')}.md",
                                    mime="text/markdown", key=f"dl_{kayit['id']}")
             with d2:
+                if DOCX_MEVCUT:
+                    st.download_button(
+                        "⬇️ .docx",
+                        data=tek_kayit_word(kayit),
+                        file_name=f"soru_{kayit.get('cikti_kod','')}_{kayit.get('id','')}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key=f"dlw_{kayit['id']}"
+                    )
+                else:
+                    st.button("⬇️ .docx", disabled=True, key=f"dlw_{kayit['id']}", help="python-docx yok")
+            with d3:
                 if st.button("🗑️ Bu kaydı havuzdan sil", key=f"sil_{kayit['id']}"):
                     havuzdan_sil(kayit["id"])
                     st.rerun()
