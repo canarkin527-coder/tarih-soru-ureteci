@@ -372,8 +372,9 @@ def soru_uret_deepseek(api_key, model, prompt, max_deneme=3, ilerleme=None):
         kullanır; pahalı 'reasoning token' üretilmez. (12 sentlik yüksek harcamanın
         sebebi genelde düşünme modu ya da çok büyük girdidir.)
       - max_tokens bir TAVANDIR, harcama değildir; yalnızca gerçekten üretilen token
-        faturalanır. Parça başına 5 soru üretildiği için 4000 fazlasıyla yeterli ve
-        kontrolden çıkan uzun üretimi engeller.
+        faturalanır. Bu yüzden 8000 tavan maliyeti ARTIRMAZ, sadece 5 sorunun
+        (metin + çözümler) yarıda kesilmesini önler. Çok düşük tutmak (örn. 4000)
+        yanıtı kestiği için 'yarım kaldı' uyarısına yol açar.
       - En düşük maliyet için model olarak 'deepseek-v4-flash' seçin ('-pro' ~3x pahalı).
     """
     client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL)
@@ -382,7 +383,7 @@ def soru_uret_deepseek(api_key, model, prompt, max_deneme=3, ilerleme=None):
             response = client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=4000,
+                max_tokens=8000,
                 temperature=0.7,
             )
             metin = response.choices[0].message.content or ""
